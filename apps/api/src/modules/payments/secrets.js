@@ -45,6 +45,7 @@ export function decryptRazorpaySecret(encryptedSecret, key) {
     'aes-256-gcm',
     encryptionKey(key),
     Buffer.from(encodedIv, 'base64url'),
+    { authTagLength: 16 },
   );
   decipher.setAuthTag(Buffer.from(encodedTag, 'base64url'));
   return Buffer.concat([
