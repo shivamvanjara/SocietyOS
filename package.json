@@ -1,0 +1,40 @@
+{
+  "name": "societyos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c green,cyan \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "npm --workspace @societyos/api run dev",
+    "dev:web": "npm --workspace @societyos/web run dev",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "format": "prettier --write \"**/*.{js,jsx,css,json,md,yml,yaml,html}\"",
+    "format:check": "prettier --check \"**/*.{js,jsx,css,json,md,yml,yaml,html}\"",
+    "db:generate": "npm --workspace @societyos/api run db:generate",
+    "db:validate": "npm --workspace @societyos/api run db:validate",
+    "db:migrate": "npm --workspace @societyos/api run db:migrate",
+    "db:deploy": "npm --workspace @societyos/api run db:deploy",
+    "db:studio": "npm --workspace @societyos/api run db:studio"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "prettier": "^3.6.2",
+    "globals": "^16.5.0",
+    "eslint": "^10.13.0"
+  },
+  "allowScripts": {
+    "@prisma/engines@7.10.1": true,
+    "esbuild@0.28.2": true,
+    "prisma@7.10.1": true
+  },
+  "overrides": {
+    "minimatch": "^11.0.1"
+  }
+}

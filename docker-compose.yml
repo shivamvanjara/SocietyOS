@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: societyos
+      POSTGRES_PASSWORD: societyos
+      POSTGRES_DB: societyos
+    ports:
+      - '5432:5432'
+    volumes:
+      - societyos-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U societyos -d societyos']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  societyos-postgres:

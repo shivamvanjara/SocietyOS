@@ -1,0 +1,38 @@
+{
+  "name": "@societyos/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "build": "node --check src/server.js && node --check src/app.js && node --check src/modules/auth/router.js && node --check src/modules/auth/security.js && node --check src/modules/auth/mfa.js && node --check src/modules/auth/email.js && node --check src/modules/societies/router.js && node --check src/modules/buildings/router.js && node --check src/modules/residents/router.js && node --check src/modules/billing/router.js && node --check src/modules/payments/router.js && node --check src/modules/payments/razorpay.js && node --check src/modules/payments/webhook.js && node --check src/modules/expenses/router.js && node --check src/modules/notices/router.js && node --check src/modules/complaints/router.js && node --check src/modules/facilities/router.js && node --check src/modules/visitors/router.js && node --check src/modules/invitations/router.js && node --check src/modules/platform-admin/router.js && node --check src/modules/subscriptions/platform-router.js && node --check src/modules/subscriptions/router.js && node --check src/modules/subscriptions/webhook.js && node --check src/config/database.js && node --check scripts/bootstrap-admin.js",
+    "start": "node src/server.js",
+    "lint": "eslint src --max-warnings=0",
+    "test": "vitest run",
+    "db:generate": "prisma generate",
+    "db:validate": "prisma validate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio",
+    "db:bootstrap-admin": "node scripts/bootstrap-admin.js"
+  },
+  "dependencies": {
+    "@societyos/shared": "0.1.0",
+    "@prisma/adapter-pg": "^7.10.1",
+    "@prisma/client": "^7.10.1",
+    "@node-rs/argon2": "^2.2.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
+    "pg": "^8.16.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "eslint": "^10.13.0",
+    "prisma": "^7.10.1",
+    "supertest": "^7.1.4",
+    "vitest": "^5.0.5"
+  }
+}

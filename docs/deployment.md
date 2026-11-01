@@ -1,0 +1,23 @@
+# Deployment
+
+The CI workflow verifies formatting, lint, tests, dependency audit, secret scanning, static analysis and workspace builds. Production hosting has not been provisioned. The repository includes a Render Blueprint for an always-on API and paid managed PostgreSQL in Singapore, plus Vercel rewrites and response headers for the web app. Render is the nearest available region to India in its current region list. Confirm that Singapore is acceptable for your societies' data-location and legal requirements before storing real personal or financial records.
+
+## Deploy the pilot stack
+
+1. Push this repository to a private GitHub repository. Keep `.env` out of Git.
+2. In Vercel, import the repository and keep the project root at the repository root so the `@societyos/shared` workspace is available. The checked-in root `vercel.json` runs `npm ci`, builds `@societyos/web`, publishes `apps/web/dist`, serves client-side routes from `index.html`, and adds the API rewrite and Razorpay-compatible security headers.
+3. In Render, create a Blueprint from the repository using `render.yaml`. The Blueprint provisions `societyos-api` and a paid `societyos-db` in Singapore. The API runs database migrations in its pre-deploy step and exposes `/api/v1/health/ready` as the health check. It uses Render's assigned port when present.
+4. Complete the Render prompt for `WEB_ORIGIN` with the production Vercel domain, for example `https://societyos.example.com`. The Vercel API rewrite targets the Render service name `societyos-api`; keep that service name or update the root `vercel.json` to match its Render hostname.
+5. In Render, set `MFA_ENCRYPTION_KEY` and `RAZORPAY_ACCOUNT_ENCRYPTION_KEY` to two separate base64url-encoded 32-byte keys. Keep both in the secret manager and back them up securely; replacing either makes existing encrypted data unreadable.
+6. Configure a verified sender and Resend `EMAIL_API_KEY` / `EMAIL_FROM` for registration verification and password recovery. Configure Razorpay test keys first, then live keys after merchant onboarding. Set the payment webhook URL to `https://societyos-api.onrender.com/api/v1/payments/webhooks/razorpay` and the subscription webhook URL to `https://societyos-api.onrender.com/api/v1/subscriptions/webhooks/razorpay`; configure the required events documented in `.env.example`.
+7. In Vercel, assign the production domain and wait for a new deployment after setting it. Verify sign-up email, password recovery, resident payment in Razorpay test mode, webhook delivery, API readiness, and QR scanning on HTTPS before a pilot. Do not enter live resident or bank data until these checks, backup restore, privacy/terms, and the security review are complete.
+
+The Vercel rewrite keeps browser requests and session cookies on the web origin while forwarding `/api/*` to Render. If you use a different frontend host, configure an equivalent same-origin API proxy and the security headers in the root `vercel.json`.
+
+**Payment settlement:** each society administrator connects that society's Razorpay merchant key, API secret, and webhook secret on the Billing page. Razorpay orders are created with that society's merchant credentials, so settlements follow the bank account configured in that merchant account. Platform-level SocietyOS subscription billing continues to use the platform credentials in Render. Before live society collections, test each merchant account, webhook, and settlement in Razorpay test mode and verify the bank account directly in the merchant dashboard. The account/UPI instructions stored in SocietyOS are for offline resident transfers.
+
+For a production rollout, provision monitoring, verify backup and restore procedures, confirm email/webhook delivery, and review the deployment settings. The Blueprint sets up services; it does not create Vercel/Render accounts, DNS, merchant credentials, or completed legal documents. Production rollout requires explicit review and approval.
+
+Production API configuration also requires `MFA_ENCRYPTION_KEY`, a separately managed base64url-encoded 32-byte key used to encrypt administrator authenticator secrets. Keep it stable and backed up; replacing it makes enrolled MFA secrets unreadable and requires administrators to reset MFA.
+
+Set `TRUST_PROXY_HOPS` to the number of trusted reverse-proxy hops in the deployment path so IP-based rate limits use the client address. Keep the default `0` for direct local development; never trust arbitrary forwarded headers.

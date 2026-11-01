@@ -1,0 +1,19 @@
+ALTER TYPE "VisitorPassStatus" ADD VALUE 'APPROVED';
+ALTER TYPE "VisitorType" ADD VALUE 'DOMESTIC_WORKER';
+ALTER TYPE "VisitorType" ADD VALUE 'CAB_RIDE';
+ALTER TYPE "VisitorType" ADD VALUE 'VENDOR';
+ALTER TYPE "VisitorType" ADD VALUE 'CONSTRUCTION_WORKER';
+ALTER TYPE "VisitorType" ADD VALUE 'MOVING_SERVICE';
+ALTER TYPE "VisitorType" ADD VALUE 'EMERGENCY_SERVICE';
+ALTER TYPE "VisitorType" ADD VALUE 'EVENT_GUEST';
+
+ALTER TABLE "visitor_passes"
+ADD COLUMN "vehicle_number" VARCHAR(20),
+ADD COLUMN "vehicle_type" VARCHAR(40),
+ADD COLUMN "delivery_platform" VARCHAR(80),
+ADD COLUMN "authorized_at" TIMESTAMPTZ(6),
+ADD COLUMN "authorized_by_id" UUID;
+
+ALTER TABLE "visitor_passes"
+ADD CONSTRAINT "visitor_passes_authorized_by_id_fkey"
+FOREIGN KEY ("authorized_by_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

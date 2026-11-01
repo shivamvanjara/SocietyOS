@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: societyos
+          POSTGRES_PASSWORD: societyos
+          POSTGRES_DB: societyos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U societyos -d societyos"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://societyos:societyos@localhost:5432/societyos?schema=public
+      RUN_DATABASE_TESTS: 'true'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Scan repository secrets
+        run: >-
+          docker run --rm
+          -v "$GITHUB_WORKSPACE:/repo"
+          -w /repo
+          ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          detect --source=/repo --redact --exit-code 1
+      - name: Run Semgrep security rules
+        run: >-
+          docker run --rm
+          -v "$GITHUB_WORKSPACE:/repo"
+          -w /repo
+          semgrep/semgrep:1.183.0
+          semgrep scan --config p/default --error --metrics=off
+      - run: npm audit
+      - run: npm run db:validate
+      - run: npm run db:generate
+      - run: npm run db:deploy
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
