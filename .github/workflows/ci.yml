@@ -42,8 +42,8 @@ jobs:
       - name: Run Semgrep security rules
         run: >-
           docker run --rm
-          -v "$GITHUB_WORKSPACE:/repo"
-          -w /repo
+          -v "$GITHUB_WORKSPACE:/src"
+          -w /src
           semgrep/semgrep:1.183.0
           semgrep scan --config p/default --error --metrics=off
       - run: npm audit
