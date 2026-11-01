@@ -1,36 +1,214 @@
 # SocietyOS
 
-SocietyOS is a JavaScript application for managing residential societies, their buildings, flats, residents, and maintenance billing. It uses a React/Vite web app, an Express API, and PostgreSQL.
+### Residential community operations, in one place.
 
-## Requirements
+SocietyOS brings resident services, society administration, maintenance billing and gate operations into one web application. It is built with JavaScript, React, Express and PostgreSQL.
 
-- Node.js 22 or newer and npm 10 or newer
-- PostgreSQL 15 or newer
+![JavaScript](https://img.shields.io/badge/JavaScript-ESM-f7df1e?logo=javascript&logoColor=111111)
+![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
+![API](https://img.shields.io/badge/API-Express-222222?logo=express&logoColor=white)
+![Database](https://img.shields.io/badge/Database-PostgreSQL-4169e1?logo=postgresql&logoColor=white)
+![Status](https://img.shields.io/badge/Status-Active%20development-d97706)
 
-## Local setup
+> **Current release:** the source is available on [GitHub](https://github.com/shivamvanjara/SocietyOS), on the `main` branch. Hosting has not been provisioned yet; this repository does not represent a live production deployment.
 
-1. Copy `.env.example` to `.env` and replace `SESSION_SECRET` with a random value of at least 32 characters.
-2. Set `DATABASE_URL` to a PostgreSQL database that you control.
-3. Start a local PostgreSQL 16 instance with `docker compose up -d postgres`, or configure your own PostgreSQL instance.
-4. Install locked dependencies with `npm ci`.
-5. Generate the Prisma client with `npm run db:generate`.
-6. Apply the checked-in migration with `npm run db:deploy`.
-7. For a first platform administrator, set `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` temporarily in your secure environment, then run `npm run db:bootstrap-admin`. Remove the bootstrap password afterward.
-8. Start the web app and API with `npm run dev`.
+---
 
-The web app runs at `http://localhost:5173`; the API runs at `http://localhost:4000`. `GET /api/v1/health` checks the API process; `GET /api/v1/health/ready` also checks PostgreSQL connectivity.
+## Contents
+
+- [What SocietyOS includes](#what-societyos-includes)
+- [How it fits together](#how-it-fits-together)
+- [Run it locally](#run-it-locally)
+- [Deploy it step by step](#deploy-it-step-by-step)
+- [Payments and sensitive settings](#payments-and-sensitive-settings)
+- [Useful commands](#useful-commands)
+- [Project structure](#project-structure)
+- [Security notes](#security-notes)
+- [Current limitations](#current-limitations)
+
+## What SocietyOS includes
+
+| Area | Capabilities |
+| --- | --- |
+| Accounts | Registration, email verification, sign-in, password recovery, multi-society membership, role-based invitations and administrator MFA |
+| Society setup | Society profile, buildings, flats, resident records and member roles |
+| Billing | Maintenance charges, partial payments, receipts, invoice documents, expense review and society transfer instructions |
+| Online payments | Razorpay checkout using the merchant credentials configured by each society |
+| Resident services | Notices and read receipts, complaint discussions and status, facility bookings and visitor pass creation |
+| Gate operations | Guard quick entry, resident approval requests, visitor QR scanning, active visitors, entry and exit records, incidents, shift handover, emergency headcount and encrypted offline arrival drafts |
+| Platform operations | Super-admin society and account access, subscription plans, subscription checkout and audit history |
+
+Resident, society staff and security-guard access is enforced by the API. Gate registrations await resident authorization unless a resident has created a valid pass. Offline guard drafts are not approvals: entry remains blocked until the draft synchronizes and authorization is recorded.
+
+## How it fits together
+
+```mermaid
+flowchart LR
+    Browser[React web app<br/>Vercel] -->|/api requests| API[Express API<br/>Render]
+    API --> DB[(PostgreSQL<br/>Render)]
+    API --> Mail[Resend email]
+    API --> Pay[Razorpay]
+```
+
+The frontend and API use a same-origin `/api/*` proxy. `vercel.json` points that proxy at `https://societyos-api.onrender.com`; if the Render service hostname changes, update the rewrite before deploying the frontend.
+
+## Run it locally
+
+### Prerequisites
+
+- Node.js 22 or newer
+- npm 10 or newer
+- Docker Desktop with Compose, or PostgreSQL 15 or newer
+
+### Steps
+
+1. **Get the source.**
+
+   ```bash
+   git clone https://github.com/shivamvanjara/SocietyOS.git
+   cd SocietyOS
+   ```
+
+2. **Create your local environment file.**
+
+   macOS/Linux:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Windows PowerShell:
+
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+3. **Set `DATABASE_URL` and `SESSION_SECRET` in `.env`.** For the included local database, the example URL matches the Compose service. Replace the example session secret with a private random value of at least 32 characters. For example:
+
+   ```bash
+   node -e "console.log(require('node:crypto').randomBytes(48).toString('base64url'))"
+   ```
+
+4. **Start PostgreSQL** if you are using the included Compose service.
+
+   ```bash
+   docker compose up -d postgres
+   ```
+
+5. **Install dependencies and generate the database client.**
+
+   ```bash
+   npm ci
+   npm run db:generate
+   ```
+
+6. **Apply the checked-in migrations.**
+
+   ```bash
+   npm run db:deploy
+   ```
+
+7. **Start the app.**
+
+   ```bash
+   npm run dev
+   ```
+
+8. **Open the web app** at [http://localhost:5173](http://localhost:5173). The API runs at [http://localhost:4000](http://localhost:4000). Use `/api/v1/health` for API liveness and `/api/v1/health/ready` to check API and PostgreSQL readiness.
+
+### Create the first platform administrator
+
+Set `BOOTSTRAP_ADMIN_EMAIL` and a strong, temporary `BOOTSTRAP_ADMIN_PASSWORD` in your local `.env`, then run:
+
+```bash
+npm run db:bootstrap-admin
+```
+
+Remove the bootstrap password after setup. Keep `.env` private; it is excluded by `.gitignore`.
+
+## Deploy it step by step
+
+### Where the backend goes
+
+Push source code to **GitHub**. Deploy the backend and PostgreSQL database from GitHub using **Render**. Deploy the React frontend from the same repository using **Vercel**. The checked-in `render.yaml` and `vercel.json` provide the starting configuration.
+
+### 1. Deploy the frontend to Vercel
+
+1. Import [`shivamvanjara/SocietyOS`](https://github.com/shivamvanjara/SocietyOS) into Vercel.
+2. Keep the project root at the repository root so npm workspaces can resolve `@societyos/shared`.
+3. Let Vercel use the checked-in `vercel.json` build settings.
+4. Deploy once and note the frontend's Vercel domain. The API can be unavailable until the Render service is ready.
+
+### 2. Deploy the API and database to Render
+
+1. In Render, create a new Blueprint and select the SocietyOS GitHub repository and `main` branch.
+2. Review `render.yaml`. It defines the `societyos-api` web service and managed PostgreSQL database in Singapore. **The configured Render plans are paid plans.**
+3. Set `WEB_ORIGIN` to the Vercel frontend origin, such as `https://your-project.vercel.app`.
+4. Provide the required encryption keys and integration secrets described below using Render's secret settings. Do not commit secrets to GitHub.
+5. Deploy. Render runs `npm run db:deploy` before release and checks `/api/v1/health/ready`.
+6. Confirm the API readiness endpoint reports healthy before testing the frontend.
+
+### 3. Connect the frontend to the API
+
+1. Confirm the Render web service hostname is `societyos-api.onrender.com`, as expected by `vercel.json`. If Render assigned a different hostname, update the API rewrite in `vercel.json` and push the change.
+2. Redeploy the Vercel project after the backend is available.
+3. Check sign-up email, password recovery, role-based access, visitor authorization and QR flows, and Razorpay in test mode before inviting a real society.
+
+### 4. Configure payment webhooks
+
+Use these URLs in Razorpay:
+
+```text
+https://societyos-api.onrender.com/api/v1/payments/webhooks/razorpay
+https://societyos-api.onrender.com/api/v1/subscriptions/webhooks/razorpay
+```
+
+Configure the event types listed in [.env.example](.env.example). After changing the API hostname, update both URLs.
+
+## Payments and sensitive settings
+
+- Each society configures its own Razorpay merchant credentials on its Billing page. Resident invoice orders use those credentials and settle to the bank account configured in that society's Razorpay merchant account.
+- SocietyOS does not collect resident card or bank credentials. The bank and UPI details in the app are for offline transfers.
+- Platform subscription checkout uses the platform Razorpay credentials configured for the API.
+- Production requires separate, stable, base64url-encoded 32-byte values for `MFA_ENCRYPTION_KEY` and `RAZORPAY_ACCOUNT_ENCRYPTION_KEY`. Generate and back them up securely; changing a key can make existing encrypted values unreadable.
+- Configure a verified Resend sender with `EMAIL_API_KEY` and `EMAIL_FROM` for production verification, recovery and gate-approval email.
+- Configure `TRUST_PROXY_HOPS` for the actual reverse-proxy path. Keep it at `0` for local development.
+
+See [deployment guidance](docs/deployment.md) and [security notes](docs/security.md) before handling live resident or financial data.
 
 ## Useful commands
 
-- `npm run build` — build all workspaces
-- `npm run db:validate` — validate the Prisma schema without connecting to PostgreSQL
-- `npm run lint` — lint JavaScript source
-- `npm test` — run API tests
-- `npm run db:bootstrap-admin` — create the first platform super administrator once
-- `npm run db:studio` — open Prisma Studio
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start the web app and API for local development |
+| `npm run build` | Build all workspaces |
+| `npm run lint` | Lint JavaScript source |
+| `npm test` | Run workspace tests |
+| `npm run db:validate` | Validate the Prisma schema |
+| `npm run db:generate` | Generate the Prisma client |
+| `npm run db:deploy` | Apply pending migrations to the configured database |
+| `npm run db:studio` | Open Prisma Studio |
 
-Authentication supports account registration, email verification, login, logout, password recovery and the authenticated profile endpoint at `/api/v1/auth/me`. New accounts receive no session until their verification link is confirmed. Verification tokens are random, stored as hashes, expire after 24 hours and work once. Password reset tokens are random, stored as hashes, expire after 30 minutes, work once, and revoke existing sessions. Local development shows verification and reset links in the app; production sends through Resend and requires `EMAIL_API_KEY` and `EMAIL_FROM`. Society administrators can invite members by email and role; invite codes are shown once, stored only as hashes, expire after seven days, and can be used during registration or by an existing signed-in account. A user can belong to multiple societies and switch the active workspace. Invitations are not emailed automatically, so the administrator must share the code securely. Unsafe browser requests must include the CSRF token returned by email verification, login or `/me` in the `X-CSRF-Token` header. Society administrators can manage buildings, flats and resident records, issue flat charges, record partial or full payments, and review paid and outstanding totals. Resident accounts receive a resident home view with only the flats and charges linked to their account email. Society authorization is checked by the API, and composite PostgreSQL foreign keys keep flat charges and payments within their owning society.
+Database integration tests require PostgreSQL and `RUN_DATABASE_TESTS=true`; see the CI workflow for the test environment configuration.
 
-## Current scope
+## Project structure
 
-The repository includes a React/Vite client, Express API, PostgreSQL/Prisma schema and migrations, Argon2id password hashing, hashed server-managed sessions, CSRF checks, verified account onboarding, one-time password recovery, administrator authenticator MFA, society onboarding/profile management, role-based member invitations with email, QR join links and in-app scanning, building and flat management, resident records with PII-free audit events, maintenance billing with integer-paise storage, printable payment receipts and PDF/image bill attachments, per-society Razorpay merchant credentials with encrypted secrets and versioned payment-order verification, resident-only views of invoices and their bill documents, society-configured bank transfer and UPI instructions, expense approval with PDF/image bill documents, member notices with read receipts, a tenant-scoped complaint queue with discussion, status transitions and image attachments, facility booking with collision checks and committee approval, one-use visitor passes with camera or manual guard check-in/out, and a platform super-admin console for society and account access, subscription plans, manual society subscription assignments, recurring Razorpay subscription checkout, renewal tracking, cancellation and platform audit history. Society admins and accountants can attach PDF/PNG/JPEG bill documents to invoices; active residents can download documents only for flats linked to their account email. Society administrators can configure bank or UPI transfer details, which are shown to active residents and accountants within that society. Resident online charges are created with that society's own Razorpay merchant credentials; Razorpay settles to the bank account configured in that merchant account. SocietyOS does not collect resident card or bank details. Subscription plan prices are stored in integer paise; assignments snapshot price, interval, and optional building and flat quotas. Configured building and flat quotas are enforced by the API. Society administrators can choose an active plan and open Razorpay-hosted checkout; only signed Razorpay subscription events activate or change paid subscription state. Charge records are idempotent by provider payment ID. Razorpay subscription checkout currently uses finite ten-year billing schedules (120 monthly or 10 annual cycles), reflecting Razorpay's maximum subscription duration. Online subscriptions require platform `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and `RAZORPAY_SUBSCRIPTION_WEBHOOK_SECRET`; the subscription webhook URL is `/api/v1/subscriptions/webhooks/razorpay`. Each society separately configures its own payment keys and webhook secret on its Billing page. Use Razorpay test credentials and verify test payments and webhook delivery before accepting live payments. Production requires separate `MFA_ENCRYPTION_KEY` and `RAZORPAY_ACCOUNT_ENCRYPTION_KEY` keys. Review the security and deployment guidance before using it with live resident or financial data.
+```text
+apps/
+  api/          Express routes, Prisma schema, migrations and API tests
+  web/          React/Vite app and role-specific screens
+packages/
+  shared/       Shared JavaScript package
+docs/           Architecture, API, deployment and security notes
+```
+
+## Security notes
+
+SocietyOS uses Argon2id password hashing, server-managed sessions, CSRF protection for unsafe browser requests, one-time hashed verification and recovery tokens, role checks, society-scoped data access, and audit records for important operations. Review [docs/security.md](docs/security.md) for configuration details.
+
+## Current limitations
+
+- Hosting is configured in the repository but has not been provisioned; there is no live production URL yet.
+- Payment providers, production email, domain, backups and monitoring require account setup and secret configuration.
+- The security-guard workflow continues to evolve. See the [visitor API notes](docs/api-specification.md) and current application for supported operations; recurring domestic-worker authorization is not yet implemented.
+- Run the full test and security-review suite against the deployment candidate before using real resident or financial data.
