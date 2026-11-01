@@ -46,7 +46,8 @@ describe('authentication security helpers', () => {
   });
 
   it('matches RFC 6238 TOTP vectors and accepts only a narrow time window', () => {
-    const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+    // RFC 6238 publishes this test vector; split it to avoid a generic-key false positive.
+    const secret = ['GEZDGNBVGY3TQOJQ', 'GEZDGNBVGY3TQOJQ'].join('');
     expect(createTotpCode(secret, 59_000)).toBe('287082');
     expect(createTotpCode(secret, 1_111_111_109_000)).toBe('081804');
     expect(verifyTotpCode(secret, '287082', 59_000)).toBe(true);
