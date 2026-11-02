@@ -45,12 +45,12 @@ Resident, society staff and security-guard access is enforced by the API. Gate r
 ```mermaid
 flowchart LR
     Browser[React web app<br/>Vercel] -->|/api requests| API[Express API<br/>Render]
-    API --> DB[(PostgreSQL<br/>Render)]
+    API --> DB[(PostgreSQL<br/>Neon)]
     API --> Mail[Resend email]
     API --> Pay[Razorpay]
 ```
 
-The frontend and API use a same-origin `/api/*` proxy. `vercel.json` points that proxy at `https://societyos-api.onrender.com`; if the Render service hostname changes, update the rewrite before deploying the frontend.
+The frontend and API use a same-origin `/api/*` proxy. `vercel.json` points that proxy at `https://societyos-api.onrender.com`; if the Render service hostname changes, update the rewrite before deploying the frontend. The API uses Neon's pooled `DATABASE_URL`; Prisma migrations use Neon's direct `DIRECT_URL`.
 
 ## Run it locally
 
@@ -130,7 +130,7 @@ Remove the bootstrap password after setup. Keep `.env` private; it is excluded b
 
 ### Where the backend goes
 
-Push source code to **GitHub**. Deploy the backend and PostgreSQL database from GitHub using **Render**. Deploy the React frontend from the same repository using **Vercel**. The checked-in `render.yaml` and `vercel.json` provide the starting configuration.
+Push source code to **GitHub**. Deploy the backend from GitHub using **Render**, PostgreSQL using **Neon**, and the React frontend from the same repository using **Vercel**. The checked-in `render.yaml` and `vercel.json` provide the starting configuration.
 
 ### 1. Deploy the frontend to Vercel
 
@@ -139,22 +139,27 @@ Push source code to **GitHub**. Deploy the backend and PostgreSQL database from 
 3. Let Vercel use the checked-in `vercel.json` build settings.
 4. Deploy once and note the frontend's Vercel domain. The API can be unavailable until the Render service is ready.
 
-### 2. Deploy the API and database to Render
+### 2. Create the Neon PostgreSQL database
+
+1. Create a Neon PostgreSQL project in a region close to the Render API.
+2. Copy its pooled connection string for `DATABASE_URL` and its direct connection string for `DIRECT_URL`. Keep the provided SSL parameters and do not commit either value.
+
+### 3. Deploy the API to Render
 
 1. In Render, create a new Blueprint and select the SocietyOS GitHub repository and `main` branch.
-2. Review `render.yaml`. It defines the `societyos-api` web service and managed PostgreSQL database in Singapore. **The configured Render plans are paid plans.**
+2. Review `render.yaml`. It defines the `societyos-api` web service and prompts for both database connection strings as private values. The configured Render API plan is paid.
 3. Set `WEB_ORIGIN` to the Vercel frontend origin, such as `https://your-project.vercel.app`.
-4. Provide the required encryption keys and integration secrets described below using Render's secret settings. Do not commit secrets to GitHub.
-5. Deploy. Render runs `npm run db:deploy` before release and checks `/api/v1/health/ready`.
+4. Provide the Neon `DATABASE_URL`, Neon `DIRECT_URL`, and required encryption/integration secrets in Render's secret settings. Do not commit secrets to GitHub.
+5. Deploy. Render runs `npm run db:deploy` against `DIRECT_URL` before release and checks `/api/v1/health/ready`.
 6. Confirm the API readiness endpoint reports healthy before testing the frontend.
 
-### 3. Connect the frontend to the API
+### 4. Connect the frontend to the API
 
 1. Confirm the Render web service hostname is `societyos-api.onrender.com`, as expected by `vercel.json`. If Render assigned a different hostname, update the API rewrite in `vercel.json` and push the change.
 2. Redeploy the Vercel project after the backend is available.
 3. Check sign-up email, password recovery, role-based access, visitor authorization and QR flows, and Razorpay in test mode before inviting a real society.
 
-### 4. Configure payment webhooks
+### 5. Configure payment webhooks
 
 Use these URLs in Razorpay:
 
