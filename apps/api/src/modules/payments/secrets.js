@@ -26,7 +26,7 @@ export function razorpayAccountEncryptionConfigured() {
 export function encryptRazorpaySecret(secret, key) {
   if (typeof secret !== 'string' || !secret) throw new TypeError('A secret is required');
   const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', encryptionKey(key), iv);
+  const cipher = createCipheriv('aes-256-gcm', encryptionKey(key), iv, { authTagLength: 16 });
   const encrypted = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
   return [
     'v1',
@@ -41,17 +41,18 @@ export function decryptRazorpaySecret(encryptedSecret, key) {
   const [version, encodedIv, encodedTag, encodedSecret, ...extra] = encryptedSecret.split('.');
   if (version !== 'v1' || !encodedIv || !encodedTag || !encodedSecret || extra.length)
     throw new Error('Encrypted Razorpay secret is invalid');
-  const decipher = createDecipheriv(
-    'aes-256-gcm',
-    encryptionKey(key),
-    Buffer.from(encodedIv, 'base64url'),
-    { authTagLength: 16 },
-  );
-  decipher.setAuthTag(Buffer.from(encodedTag, 'base64url'));
-  return Buffer.concat([
-    decipher.update(Buffer.from(encodedSecret, 'base64url')),
-    decipher.final(),
-  ]).toString('utf8');
+  if (![encodedIv, encodedTag, encodedSecret].every((part) => /^[A-Za-z0-9_-]+$/u.test(part))) {
+    throw new Error('Encrypted Razorpay secret is invalid');
+  }
+  const iv = Buffer.from(encodedIv, 'base64url');
+  const authTag = Buffer.from(encodedTag, 'base64url');
+  const ciphertext = Buffer.from(encodedSecret, 'base64url');
+  if (iv.length !== 12 || authTag.length !== 16 || ciphertext.length === 0) {
+    throw new Error('Encrypted Razorpay secret is invalid');
+  }
+  const decipher = createDecipheriv('aes-256-gcm', encryptionKey(key), iv, { authTagLength: 16 });
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
 }
 
 export function societyRazorpayCredentials(account) {

@@ -80,6 +80,7 @@ model User {
   visitorCheckOuts             VisitorPass[]            @relation("VisitorCheckOutActor")
   visitorApprovals             VisitorPass[]            @relation("VisitorAuthorizationActor")
   visitorDeliveryHandovers     VisitorPass[]            @relation("VisitorDeliveryHandoverActor")
+  recurringVisitorAuthorizations RecurringVisitorAuthorization[] @relation("RecurringVisitorAuthorizationCreator")
   guardIncidentsReported       GuardIncident[]           @relation("GuardIncidentReporter")
   guardIncidentsResolved       GuardIncident[]           @relation("GuardIncidentResolver")
   guardShiftHandovers           GuardShiftHandover[]
@@ -145,6 +146,7 @@ model Society {
   facilities           Facility[]
   facilityBookings     FacilityBooking[]
   visitorPasses        VisitorPass[]
+  recurringVisitorAuthorizations RecurringVisitorAuthorization[]
   invitations          SocietyInvitation[]
   guardIncidents       GuardIncident[]
   guardShiftHandovers   GuardShiftHandover[]
@@ -181,6 +183,7 @@ model Flat {
   residents       Resident[]
   invoices        Invoice[]
   visitorPasses   VisitorPass[]
+  recurringVisitorAuthorizations RecurringVisitorAuthorization[]
 
   @@unique([societyId, id])
   @@unique([societyId, buildingId, flatNumber])
@@ -619,6 +622,34 @@ model VisitorPass {
   @@index([societyId, status, expectedAt])
   @@index([societyId, flatId, createdAt])
   @@map("visitor_passes")
+}
+
+model RecurringVisitorAuthorization {
+  id           String      @id @default(uuid()) @db.Uuid
+  societyId    String      @map("society_id") @db.Uuid
+  flatId       String      @map("flat_id") @db.Uuid
+  createdById  String      @map("created_by_id") @db.Uuid
+  visitorName  String      @map("visitor_name") @db.VarChar(160)
+  visitorPhone String      @map("visitor_phone") @db.VarChar(16)
+  visitorType  VisitorType @map("visitor_type")
+  purpose      String      @db.VarChar(200)
+  validFrom    DateTime    @map("valid_from") @db.Date
+  validUntil   DateTime    @map("valid_until") @db.Date
+  weekdays     Int[]
+  startMinute  Int         @map("start_minute")
+  endMinute    Int         @map("end_minute")
+  active       Boolean     @default(true)
+  revokedAt    DateTime?   @map("revoked_at") @db.Timestamptz(6)
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  society      Society     @relation(fields: [societyId], references: [id], onDelete: Restrict)
+  flat         Flat        @relation(fields: [societyId, flatId], references: [societyId, id], onDelete: Restrict)
+  createdBy    User        @relation("RecurringVisitorAuthorizationCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([societyId, id])
+  @@index([societyId, flatId, active, validUntil])
+  @@index([societyId, visitorPhone, active])
+  @@map("recurring_visitor_authorizations")
 }
 
 enum GuardIncidentCategory {

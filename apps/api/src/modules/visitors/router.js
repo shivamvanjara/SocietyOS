@@ -27,9 +27,53 @@ const passSchema = z
     return time > Date.now() && time <= Date.now() + 30 * 24 * 60 * 60 * 1000;
   });
 const verifySchema = z.object({ code: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).strict();
+const dateOnly = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((value) => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  });
+const recurringAuthorizationSchema = z
+  .object({
+    flatId: uuid,
+    visitorName: z.string().trim().min(2).max(160),
+    visitorPhone: z
+      .string()
+      .trim()
+      .regex(/^\+?[1-9]\d{7,14}$/),
+    visitorType: z.enum(['DOMESTIC_WORKER', 'SERVICE_PERSONNEL']),
+    purpose: z.string().trim().min(2).max(200),
+    validFrom: dateOnly,
+    validUntil: dateOnly,
+    weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+    startMinute: z.number().int().min(0).max(1439),
+    endMinute: z.number().int().min(1).max(1440),
+  })
+  .strict()
+  .refine((value) => new Set(value.weekdays).size === value.weekdays.length, {
+    message: 'Choose each weekday only once',
+    path: ['weekdays'],
+  })
+  .refine((value) => value.startMinute < value.endMinute, {
+    message: 'End time must be later than start time',
+    path: ['endMinute'],
+  })
+  .refine((value) => value.validFrom <= value.validUntil, {
+    message: 'End date must be on or after start date',
+    path: ['validUntil'],
+  })
+  .refine(
+    (value) => Date.parse(`${value.validUntil}T00:00:00.000Z`) <= Date.now() + 366 * 86400000,
+    {
+      message: 'Authorization cannot extend more than one year',
+      path: ['validUntil'],
+    },
+  );
 const arrivalSchema = z
   .object({
     clientRequestId: uuid.optional(),
+    identityConfirmed: z.boolean().optional().default(false),
     flatId: uuid,
     visitorName: z.string().trim().min(2).max(160),
     visitorPhone: z
@@ -84,6 +128,26 @@ function canSeeAll(role) {
 
 function isGuard(role) {
   return ['SOCIETY_ADMIN', 'SECURITY_GUARD'].includes(role);
+}
+
+function indiaLocalWindow(now) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    weekday: 'short',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  const dayIndex = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[values.weekday];
+  return {
+    date: `${values.year}-${values.month}-${values.day}`,
+    dayIndex,
+    minute: Number(values.hour) * 60 + Number(values.minute),
+  };
 }
 
 visitorsRouter.use(requireAuthenticated);
@@ -171,6 +235,195 @@ visitorsRouter.get('/approvals', async (req, res, next) => {
     next(error);
   }
 });
+
+visitorsRouter.get('/recurring-authorizations', async (req, res, next) => {
+  const societyId = uuid.safeParse(req.params.societyId);
+  if (!societyId.success) return fail(res, 400, 'VALIDATION_ERROR', 'Invalid society');
+  try {
+    const currentMember = await member(prisma, societyId.data, req.auth.user.id);
+    if (!currentMember) return fail(res, 404, 'SOCIETY_NOT_FOUND', 'Society not found');
+    if (currentMember.role !== 'RESIDENT')
+      return fail(res, 403, 'FORBIDDEN', 'Resident access is required');
+    const residentFlats = await prisma.resident.findMany({
+      where: { societyId: societyId.data, email: req.auth.user.email, status: 'ACTIVE' },
+      select: { flatId: true },
+    });
+    const authorizations = await prisma.recurringVisitorAuthorization.findMany({
+      where: {
+        societyId: societyId.data,
+        flatId: { in: residentFlats.map(({ flatId }) => flatId) },
+      },
+      orderBy: [{ active: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
+      take: 100,
+      select: {
+        id: true,
+        flatId: true,
+        visitorName: true,
+        visitorPhone: true,
+        visitorType: true,
+        purpose: true,
+        validFrom: true,
+        validUntil: true,
+        weekdays: true,
+        startMinute: true,
+        endMinute: true,
+        active: true,
+        revokedAt: true,
+        createdAt: true,
+        createdBy: { select: { email: true } },
+        flat: { select: { flatNumber: true, building: { select: { name: true } } } },
+      },
+    });
+    res.json({ authorizations });
+  } catch (error) {
+    next(error);
+  }
+});
+
+visitorsRouter.post('/recurring-authorizations', requireCsrf, async (req, res, next) => {
+  const societyId = uuid.safeParse(req.params.societyId);
+  const parsed = recurringAuthorizationSchema.safeParse(req.body);
+  if (!societyId.success || !parsed.success)
+    return fail(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      'Enter a valid worker, flat, date range, weekdays and daily time window',
+    );
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const currentMember = await member(tx, societyId.data, req.auth.user.id);
+      if (!currentMember) return { kind: 'inaccessible' };
+      if (currentMember.role !== 'RESIDENT') return { kind: 'forbidden' };
+      const resident = await tx.resident.findFirst({
+        where: {
+          societyId: societyId.data,
+          flatId: parsed.data.flatId,
+          email: req.auth.user.email,
+          status: 'ACTIVE',
+        },
+        select: { id: true },
+      });
+      if (!resident) return { kind: 'flat_missing' };
+      const duplicate = await tx.recurringVisitorAuthorization.findFirst({
+        where: {
+          societyId: societyId.data,
+          flatId: parsed.data.flatId,
+          visitorPhone: parsed.data.visitorPhone,
+          visitorType: parsed.data.visitorType,
+          active: true,
+          revokedAt: null,
+          validFrom: { lte: new Date(`${parsed.data.validUntil}T00:00:00.000Z`) },
+          validUntil: { gte: new Date(`${parsed.data.validFrom}T00:00:00.000Z`) },
+        },
+        select: { id: true },
+      });
+      if (duplicate) return { kind: 'duplicate' };
+      const authorization = await tx.recurringVisitorAuthorization.create({
+        data: {
+          societyId: societyId.data,
+          flatId: parsed.data.flatId,
+          createdById: req.auth.user.id,
+          visitorName: parsed.data.visitorName,
+          visitorPhone: parsed.data.visitorPhone,
+          visitorType: parsed.data.visitorType,
+          purpose: parsed.data.purpose,
+          validFrom: new Date(`${parsed.data.validFrom}T00:00:00.000Z`),
+          validUntil: new Date(`${parsed.data.validUntil}T00:00:00.000Z`),
+          weekdays: [...parsed.data.weekdays].sort((a, b) => a - b),
+          startMinute: parsed.data.startMinute,
+          endMinute: parsed.data.endMinute,
+        },
+        select: { id: true, flatId: true, visitorName: true, visitorType: true, active: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          societyId: societyId.data,
+          actorUserId: req.auth.user.id,
+          eventType: 'RECURRING_VISITOR_AUTHORIZATION_CREATED',
+          resourceType: 'RECURRING_VISITOR_AUTHORIZATION',
+          resourceId: authorization.id,
+        },
+      });
+      return { kind: 'created', authorization };
+    });
+    if (result.kind === 'inaccessible')
+      return fail(res, 404, 'SOCIETY_NOT_FOUND', 'Society not found');
+    if (result.kind === 'forbidden')
+      return fail(res, 403, 'FORBIDDEN', 'Resident access is required');
+    if (result.kind === 'flat_missing')
+      return fail(res, 404, 'FLAT_NOT_FOUND', 'That flat is not linked to your resident account');
+    if (result.kind === 'duplicate')
+      return fail(
+        res,
+        409,
+        'AUTHORIZATION_EXISTS',
+        'An active authorization already covers this worker and validity period',
+      );
+    res.status(201).json({ authorization: result.authorization });
+  } catch (error) {
+    next(error);
+  }
+});
+
+visitorsRouter.post(
+  '/recurring-authorizations/:authorizationId/revoke',
+  requireCsrf,
+  async (req, res, next) => {
+    const societyId = uuid.safeParse(req.params.societyId);
+    const authorizationId = uuid.safeParse(req.params.authorizationId);
+    if (!societyId.success || !authorizationId.success)
+      return fail(res, 400, 'VALIDATION_ERROR', 'Invalid authorization');
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const currentMember = await member(tx, societyId.data, req.auth.user.id);
+        if (!currentMember) return 'inaccessible';
+        if (currentMember.role !== 'RESIDENT') return 'forbidden';
+        const residentFlats = await tx.resident.findMany({
+          where: { societyId: societyId.data, email: req.auth.user.email, status: 'ACTIVE' },
+          select: { flatId: true },
+        });
+        const authorization = await tx.recurringVisitorAuthorization.findFirst({
+          where: {
+            id: authorizationId.data,
+            societyId: societyId.data,
+            flatId: { in: residentFlats.map(({ flatId }) => flatId) },
+            active: true,
+          },
+          select: { id: true },
+        });
+        if (!authorization) return 'missing';
+        await tx.recurringVisitorAuthorization.update({
+          where: { id: authorization.id },
+          data: { active: false, revokedAt: new Date() },
+        });
+        await tx.auditLog.create({
+          data: {
+            societyId: societyId.data,
+            actorUserId: req.auth.user.id,
+            eventType: 'RECURRING_VISITOR_AUTHORIZATION_REVOKED',
+            resourceType: 'RECURRING_VISITOR_AUTHORIZATION',
+            resourceId: authorization.id,
+          },
+        });
+        return 'revoked';
+      });
+      if (result === 'inaccessible')
+        return fail(res, 404, 'SOCIETY_NOT_FOUND', 'Society not found');
+      if (result === 'forbidden') return fail(res, 403, 'FORBIDDEN', 'Resident access is required');
+      if (result === 'missing')
+        return fail(
+          res,
+          404,
+          'AUTHORIZATION_NOT_FOUND',
+          'Authorization not found or already revoked',
+        );
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
 visitorsRouter.get('/passes', async (req, res, next) => {
   const societyId = uuid.safeParse(req.params.societyId);
@@ -395,6 +648,47 @@ visitorsRouter.post('/arrivals', requireCsrf, async (req, res, next) => {
       });
       if (duplicateActiveVisitor) return { kind: 'already_inside' };
       const now = new Date();
+      let recurringAuthorization = null;
+      if (
+        parsed.data.identityConfirmed &&
+        ['DOMESTIC_WORKER', 'SERVICE_PERSONNEL'].includes(parsed.data.visitorType)
+      ) {
+        const localWindow = indiaLocalWindow(now);
+        const localDate = new Date(`${localWindow.date}T00:00:00.000Z`);
+        const activeResidentEmails = new Set(
+          residents.map(({ email }) => email?.toLowerCase()).filter(Boolean),
+        );
+        const candidates = await tx.recurringVisitorAuthorization.findMany({
+          where: {
+            societyId: societyId.data,
+            flatId: flat.id,
+            visitorPhone: parsed.data.visitorPhone,
+            visitorType: parsed.data.visitorType,
+            active: true,
+            revokedAt: null,
+            validFrom: { lte: localDate },
+            validUntil: { gte: localDate },
+          },
+          select: {
+            id: true,
+            createdById: true,
+            visitorName: true,
+            weekdays: true,
+            startMinute: true,
+            endMinute: true,
+            createdBy: { select: { email: true } },
+          },
+        });
+        recurringAuthorization = candidates.find(
+          (authorization) =>
+            authorization.visitorName.trim().toLocaleLowerCase() ===
+              parsed.data.visitorName.trim().toLocaleLowerCase() &&
+            activeResidentEmails.has(authorization.createdBy.email.toLowerCase()) &&
+            authorization.weekdays.includes(localWindow.dayIndex) &&
+            localWindow.minute >= authorization.startMinute &&
+            localWindow.minute < authorization.endMinute,
+        );
+      }
       const pass = await tx.visitorPass.create({
         data: {
           societyId: societyId.data,
@@ -415,7 +709,10 @@ visitorsRouter.post('/arrivals', requireCsrf, async (req, res, next) => {
           purpose: parsed.data.purpose,
           expectedAt: now,
           expiresAt: new Date(now.getTime() + 6 * 60 * 60 * 1000),
-          status: 'PENDING_APPROVAL',
+          status: recurringAuthorization ? 'APPROVED' : 'PENDING_APPROVAL',
+          ...(recurringAuthorization
+            ? { authorizedAt: now, authorizedById: recurringAuthorization.createdById }
+            : {}),
         },
         select: {
           id: true,
@@ -434,7 +731,9 @@ visitorsRouter.post('/arrivals', requireCsrf, async (req, res, next) => {
         data: {
           societyId: societyId.data,
           actorUserId: req.auth.user.id,
-          eventType: 'VISITOR_ARRIVAL_REGISTERED',
+          eventType: recurringAuthorization
+            ? 'VISITOR_RECURRING_AUTHORIZATION_USED'
+            : 'VISITOR_ARRIVAL_REGISTERED',
           resourceType: 'VISITOR_PASS',
           resourceId: pass.id,
         },
@@ -445,6 +744,7 @@ visitorsRouter.post('/arrivals', requireCsrf, async (req, res, next) => {
         societyName: society.name,
         flatLabel: `${flat.building.name} · ${flat.flatNumber}`,
         notificationRecipients,
+        recurringAuthorizationApplied: Boolean(recurringAuthorization),
       };
     });
     if (result.kind === 'inaccessible')
@@ -453,7 +753,9 @@ visitorsRouter.post('/arrivals', requireCsrf, async (req, res, next) => {
       return fail(res, 403, 'FORBIDDEN', 'Security guard access is required');
     if (result.kind === 'flat_missing') return fail(res, 404, 'FLAT_NOT_FOUND', 'Flat not found');
     if (result.kind === 'replay')
-      return res.status(200).json({ pass: result.pass, replayed: true, approvalNotificationSent: false });
+      return res
+        .status(200)
+        .json({ pass: result.pass, replayed: true, approvalNotificationSent: false });
     if (result.kind === 'no_resident_contact')
       return fail(
         res,
@@ -469,21 +771,26 @@ visitorsRouter.post('/arrivals', requireCsrf, async (req, res, next) => {
         'This mobile number already has an active visitor entry',
       );
     const approvalUrl = new URL('/', env.WEB_ORIGIN).toString();
-    const emailResults = await Promise.allSettled(
-      result.notificationRecipients.map((email) =>
-        sendGateApprovalEmail(email, approvalUrl, {
-          societyName: result.societyName,
-          visitorName: result.pass.visitorName,
-          flatLabel: result.flatLabel,
-          expiresAt: result.pass.expiresAt,
-        }),
-      ),
-    );
+    const emailResults = result.recurringAuthorizationApplied
+      ? []
+      : await Promise.allSettled(
+          result.notificationRecipients.map((email) =>
+            sendGateApprovalEmail(email, approvalUrl, {
+              societyName: result.societyName,
+              visitorName: result.pass.visitorName,
+              flatLabel: result.flatLabel,
+              expiresAt: result.pass.expiresAt,
+            }),
+          ),
+        );
     res.status(201).json({
       pass: result.pass,
-      approvalNotificationSent: emailResults.every(
-        (resultItem) => resultItem.status === 'fulfilled' && !resultItem.value.previewUrl,
-      ),
+      recurringAuthorizationApplied: result.recurringAuthorizationApplied,
+      approvalNotificationSent:
+        !result.recurringAuthorizationApplied &&
+        emailResults.every(
+          (resultItem) => resultItem.status === 'fulfilled' && !resultItem.value.previewUrl,
+        ),
     });
   } catch (error) {
     if (error?.code === 'P2002' && parsed.data.clientRequestId) {
@@ -1007,8 +1314,15 @@ visitorsRouter.post('/passes/:passId/delivery-handover', requireCsrf, async (req
       return 'updated';
     });
     if (result === 'inaccessible') return fail(res, 404, 'SOCIETY_NOT_FOUND', 'Society not found');
-    if (result === 'forbidden') return fail(res, 403, 'FORBIDDEN', 'Security guard access is required');
-    if (result === 'missing') return fail(res, 409, 'DELIVERY_NOT_ACTIVE', 'Only an active delivery without a recorded handover can be updated');
+    if (result === 'forbidden')
+      return fail(res, 403, 'FORBIDDEN', 'Security guard access is required');
+    if (result === 'missing')
+      return fail(
+        res,
+        409,
+        'DELIVERY_NOT_ACTIVE',
+        'Only an active delivery without a recorded handover can be updated',
+      );
     res.status(204).end();
   } catch (error) {
     next(error);
@@ -1103,7 +1417,12 @@ visitorsRouter.post('/incidents', requireCsrf, async (req, res, next) => {
   const societyId = uuid.safeParse(req.params.societyId);
   const parsed = incidentSchema.safeParse(req.body);
   if (!societyId.success || !parsed.success)
-    return fail(res, 400, 'VALIDATION_ERROR', 'Enter an incident category, severity and description');
+    return fail(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      'Enter an incident category, severity and description',
+    );
   try {
     const result = await prisma.$transaction(async (tx) => {
       const currentMember = await member(tx, societyId.data, req.auth.user.id);
@@ -1131,8 +1450,10 @@ visitorsRouter.post('/incidents', requireCsrf, async (req, res, next) => {
       });
       return { kind: 'created', incident };
     });
-    if (result.kind === 'inaccessible') return fail(res, 404, 'SOCIETY_NOT_FOUND', 'Society not found');
-    if (result.kind === 'forbidden') return fail(res, 403, 'FORBIDDEN', 'Security guard access is required');
+    if (result.kind === 'inaccessible')
+      return fail(res, 404, 'SOCIETY_NOT_FOUND', 'Society not found');
+    if (result.kind === 'forbidden')
+      return fail(res, 403, 'FORBIDDEN', 'Security guard access is required');
     res.status(201).json({ incident: result.incident });
   } catch (error) {
     next(error);
@@ -1166,8 +1487,10 @@ visitorsRouter.post('/incidents/:incidentId/resolve', requireCsrf, async (req, r
       return 'resolved';
     });
     if (result === 'inaccessible') return fail(res, 404, 'SOCIETY_NOT_FOUND', 'Society not found');
-    if (result === 'forbidden') return fail(res, 403, 'FORBIDDEN', 'Security guard access is required');
-    if (result === 'missing') return fail(res, 409, 'INCIDENT_NOT_OPEN', 'This incident is already resolved');
+    if (result === 'forbidden')
+      return fail(res, 403, 'FORBIDDEN', 'Security guard access is required');
+    if (result === 'missing')
+      return fail(res, 409, 'INCIDENT_NOT_OPEN', 'This incident is already resolved');
     res.status(204).end();
   } catch (error) {
     next(error);
@@ -1204,7 +1527,10 @@ visitorsRouter.get('/handovers', async (req, res, next) => {
 
 visitorsRouter.post('/handovers', requireCsrf, async (req, res, next) => {
   const societyId = uuid.safeParse(req.params.societyId);
-  const parsed = z.object({ notes: z.string().trim().min(3).max(2000) }).strict().safeParse(req.body);
+  const parsed = z
+    .object({ notes: z.string().trim().min(3).max(2000) })
+    .strict()
+    .safeParse(req.body);
   if (!societyId.success || !parsed.success)
     return fail(res, 400, 'VALIDATION_ERROR', 'Add a short handover note');
   try {
@@ -1226,7 +1552,14 @@ visitorsRouter.post('/handovers', requireCsrf, async (req, res, next) => {
           openIncidentsCount,
           notes: parsed.data.notes,
         },
-        select: { id: true, activeVisitorsCount: true, pendingApprovalsCount: true, openIncidentsCount: true, notes: true, createdAt: true },
+        select: {
+          id: true,
+          activeVisitorsCount: true,
+          pendingApprovalsCount: true,
+          openIncidentsCount: true,
+          notes: true,
+          createdAt: true,
+        },
       });
       await tx.auditLog.create({
         data: {
@@ -1239,8 +1572,10 @@ visitorsRouter.post('/handovers', requireCsrf, async (req, res, next) => {
       });
       return { kind: 'created', handover };
     });
-    if (result.kind === 'inaccessible') return fail(res, 404, 'SOCIETY_NOT_FOUND', 'Society not found');
-    if (result.kind === 'forbidden') return fail(res, 403, 'FORBIDDEN', 'Security guard access is required');
+    if (result.kind === 'inaccessible')
+      return fail(res, 404, 'SOCIETY_NOT_FOUND', 'Society not found');
+    if (result.kind === 'forbidden')
+      return fail(res, 403, 'FORBIDDEN', 'Security guard access is required');
     res.status(201).json({ handover: result.handover });
   } catch (error) {
     next(error);

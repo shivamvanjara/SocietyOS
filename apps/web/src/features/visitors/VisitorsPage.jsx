@@ -41,6 +41,32 @@ const freshPass = () => ({
   expectedAt: '',
 });
 
+const freshRecurringAuthorization = () => {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  return {
+    flatId: '',
+    visitorName: '',
+    visitorPhone: '',
+    visitorType: 'DOMESTIC_WORKER',
+    purpose: 'Regular domestic work',
+    validFrom: today,
+    validUntil: today,
+    weekdays: [1, 2, 3, 4, 5],
+    startTime: '07:00',
+    endTime: '22:00',
+  };
+};
+
+const weekdays = [
+  ['Sunday', 0],
+  ['Monday', 1],
+  ['Tuesday', 2],
+  ['Wednesday', 3],
+  ['Thursday', 4],
+  ['Friday', 5],
+  ['Saturday', 6],
+];
+
 const visitorKinds = [
   { value: 'DELIVERY', label: 'Delivery' },
   { value: 'GUEST', label: 'Guest' },
@@ -91,6 +117,7 @@ export default function VisitorsPage({ society, csrfToken, role }) {
   const [guardForm, setGuardForm] = useState({
     visitorName: '',
     visitorPhone: '',
+    identityConfirmed: false,
     flatId: '',
     purpose: '',
     vehicleNumber: '',
@@ -108,6 +135,7 @@ export default function VisitorsPage({ society, csrfToken, role }) {
     location: '',
     description: '',
   });
+  const [recurringForm, setRecurringForm] = useState(freshRecurringAuthorization);
   const [handoverNotes, setHandoverNotes] = useState('');
   const isGuard = role === 'SECURITY_GUARD';
   const passesQuery = useQuery({
@@ -132,10 +160,17 @@ export default function VisitorsPage({ society, csrfToken, role }) {
     enabled: passesQuery.data?.role === 'RESIDENT',
     refetchInterval: 15_000,
   });
+  const recurringAuthorizationsQuery = useQuery({
+    queryKey: ['recurring-visitor-authorizations', society.id],
+    queryFn: () => api(`${root}/recurring-authorizations`),
+    enabled: passesQuery.data?.role === 'RESIDENT',
+    refetchInterval: 30_000,
+  });
   const incidentsQuery = useQuery({
     queryKey: ['guard-incidents', society.id],
     queryFn: () => api(`${root}/incidents`),
-    enabled: passesQuery.data?.role === 'SECURITY_GUARD' && ['incidents', 'handover'].includes(guardTab),
+    enabled:
+      passesQuery.data?.role === 'SECURITY_GUARD' && ['incidents', 'handover'].includes(guardTab),
   });
   const handoversQuery = useQuery({
     queryKey: ['guard-handovers', society.id],
@@ -252,7 +287,7 @@ export default function VisitorsPage({ society, csrfToken, role }) {
   });
   const checkInMutation = useMutation({
     mutationFn: (value) => {
-      const code = typeof value === 'string' ? value : value?.code ?? verifyCode.trim();
+      const code = typeof value === 'string' ? value : (value?.code ?? verifyCode.trim());
       return api(`${root}/verify`, { method: 'POST', csrfToken, body: { code } });
     },
     onSuccess: (result) => {
@@ -298,6 +333,7 @@ export default function VisitorsPage({ society, csrfToken, role }) {
       setGuardForm({
         visitorName: '',
         visitorPhone: '',
+        identityConfirmed: false,
         flatId: '',
         purpose: '',
         vehicleNumber: '',
@@ -308,18 +344,23 @@ export default function VisitorsPage({ society, csrfToken, role }) {
         expectedDurationMinutes: 240,
         deliveryPlatform: '',
       });
-      setGuardTab('pending');
+      setGuardTab(result.recurringAuthorizationApplied ? 'expected' : 'pending');
       setError('');
       if (result.queuedOffline) {
-        setArrivalNotice('Saved securely on this device. It is not approved or admitted until it syncs and the resident authorizes entry.');
+        setArrivalNotice(
+          'Saved securely on this device. It is not approved or admitted until it syncs and the resident authorizes entry.',
+        );
         refreshOfflineQueue();
       } else {
         setArrivalNotice(
-          result.approvalNotificationSent
-            ? 'Resident approval request was sent. Entry remains blocked until approval.'
-            : 'Arrival recorded. Resident email notification did not send; contact the resident before entry.',
+          result.recurringAuthorizationApplied
+            ? 'Recurring resident authorization matched. Verify identity and record entry from Expected Visitors.'
+            : result.approvalNotificationSent
+              ? 'Resident approval request was sent. Entry remains blocked until approval.'
+              : 'Arrival recorded. Resident email notification did not send; contact the resident before entry.',
         );
         refresh();
+        queryClient.invalidateQueries({ queryKey: ['guard-emergency', society.id] });
       }
     },
     onError: (cause) => setError(cause.message),
@@ -330,6 +371,43 @@ export default function VisitorsPage({ society, csrfToken, role }) {
     onSuccess: () => {
       setError('');
       queryClient.invalidateQueries({ queryKey: ['visitor-approvals', society.id] });
+    },
+    onError: (cause) => setError(cause.message),
+  });
+  const recurringAuthorizationMutation = useMutation({
+    mutationFn: () => {
+      const toMinutes = (time) => {
+        const [hours, minutes] = time.split(':').map(Number);
+        return hours * 60 + minutes;
+      };
+      return api(`${root}/recurring-authorizations`, {
+        method: 'POST',
+        csrfToken,
+        body: {
+          ...recurringForm,
+          weekdays: recurringForm.weekdays.map(Number),
+          startMinute: toMinutes(recurringForm.startTime),
+          endMinute: toMinutes(recurringForm.endTime),
+        },
+      });
+    },
+    onSuccess: () => {
+      setRecurringForm(freshRecurringAuthorization());
+      setError('');
+      queryClient.invalidateQueries({ queryKey: ['recurring-visitor-authorizations', society.id] });
+    },
+    onError: (cause) => setError(cause.message),
+  });
+  const revokeRecurringAuthorizationMutation = useMutation({
+    mutationFn: (authorization) =>
+      api(`${root}/recurring-authorizations/${authorization.id}/revoke`, {
+        method: 'POST',
+        csrfToken,
+        body: {},
+      }),
+    onSuccess: () => {
+      setError('');
+      queryClient.invalidateQueries({ queryKey: ['recurring-visitor-authorizations', society.id] });
     },
     onError: (cause) => setError(cause.message),
   });
@@ -346,19 +424,26 @@ export default function VisitorsPage({ society, csrfToken, role }) {
   const incidentMutation = useMutation({
     mutationFn: () => api(`${root}/incidents`, { method: 'POST', csrfToken, body: incidentForm }),
     onSuccess: () => {
-      setIncidentForm({ category: 'SUSPICIOUS_ACTIVITY', severity: 'MEDIUM', location: '', description: '' });
+      setIncidentForm({
+        category: 'SUSPICIOUS_ACTIVITY',
+        severity: 'MEDIUM',
+        location: '',
+        description: '',
+      });
       setError('');
       queryClient.invalidateQueries({ queryKey: ['guard-incidents', society.id] });
     },
     onError: (cause) => setError(cause.message),
   });
   const resolveIncidentMutation = useMutation({
-    mutationFn: (incident) => api(`${root}/incidents/${incident.id}/resolve`, { method: 'POST', csrfToken, body: {} }),
+    mutationFn: (incident) =>
+      api(`${root}/incidents/${incident.id}/resolve`, { method: 'POST', csrfToken, body: {} }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['guard-incidents', society.id] }),
     onError: (cause) => setError(cause.message),
   });
   const handoverMutation = useMutation({
-    mutationFn: () => api(`${root}/handovers`, { method: 'POST', csrfToken, body: { notes: handoverNotes } }),
+    mutationFn: () =>
+      api(`${root}/handovers`, { method: 'POST', csrfToken, body: { notes: handoverNotes } }),
     onSuccess: () => {
       setHandoverNotes('');
       queryClient.invalidateQueries({ queryKey: ['guard-handovers', society.id] });
@@ -367,7 +452,12 @@ export default function VisitorsPage({ society, csrfToken, role }) {
     onError: (cause) => setError(cause.message),
   });
   const deliveryMutation = useMutation({
-    mutationFn: ({ pass, outcome }) => api(`${root}/passes/${pass.id}/delivery-handover`, { method: 'POST', csrfToken, body: { outcome } }),
+    mutationFn: ({ pass, outcome }) =>
+      api(`${root}/passes/${pass.id}/delivery-handover`, {
+        method: 'POST',
+        csrfToken,
+        body: { outcome },
+      }),
     onSuccess: () => refresh(),
     onError: (cause) => setError(cause.message),
   });
@@ -439,9 +529,12 @@ export default function VisitorsPage({ society, csrfToken, role }) {
           <span className={`guard-status ${statusTone(pass.status)}`}>
             {visitorStatus[pass.status] ?? pass.status}
           </span>
-          {pass.status === 'CHECKED_IN' && pass.checkedInAt && Date.now() - new Date(pass.checkedInAt).getTime() > (pass.expectedDurationMinutes ?? 240) * 60_000 && (
-            <span className="guard-status pending">Over expected duration</span>
-          )}
+          {pass.status === 'CHECKED_IN' &&
+            pass.checkedInAt &&
+            Date.now() - new Date(pass.checkedInAt).getTime() >
+              (pass.expectedDurationMinutes ?? 240) * 60_000 && (
+              <span className="guard-status pending">Over expected duration</span>
+            )}
         </div>
         <div className="guard-visitor-meta">
           <span>
@@ -480,22 +573,35 @@ export default function VisitorsPage({ society, csrfToken, role }) {
             <h2>Quick Entry</h2>
             <p>{society.name} · Security desk</p>
           </div>
-          <button className="button secondary guard-refresh" onClick={() => {
-            passesQuery.refetch();
-            queryClient.invalidateQueries({ queryKey: ['guard-emergency', society.id] });
-            queryClient.invalidateQueries({ queryKey: ['guard-incidents', society.id] });
-            queryClient.invalidateQueries({ queryKey: ['guard-handovers', society.id] });
-            queryClient.invalidateQueries({ queryKey: ['visitor-history', society.id] });
-          }}>
+          <button
+            className="button secondary guard-refresh"
+            onClick={() => {
+              passesQuery.refetch();
+              queryClient.invalidateQueries({ queryKey: ['guard-emergency', society.id] });
+              queryClient.invalidateQueries({ queryKey: ['guard-incidents', society.id] });
+              queryClient.invalidateQueries({ queryKey: ['guard-handovers', society.id] });
+              queryClient.invalidateQueries({ queryKey: ['visitor-history', society.id] });
+            }}
+          >
             Refresh
           </button>
         </section>
         <div className={`guard-connection ${isOnline ? 'online' : 'offline'}`} role="status">
-          {isOnline ? 'Online · gate records sync to SocietyOS' : 'Offline · new arrivals are saved encrypted on this device; entry remains blocked until approval syncs'}
+          {isOnline
+            ? 'Online · gate records sync to SocietyOS'
+            : 'Offline · new arrivals are saved encrypted on this device; entry remains blocked until approval syncs'}
           {offlineQueue.length > 0 && <span>{offlineQueue.length} unsynced</span>}
-          {isOnline && offlineQueue.some((item) => item.state === 'QUEUED') && <button type="button" className="text-button" onClick={syncOfflineQueue}>Sync now</button>}
+          {isOnline && offlineQueue.some((item) => item.state === 'QUEUED') && (
+            <button type="button" className="text-button" onClick={syncOfflineQueue}>
+              Sync now
+            </button>
+          )}
         </div>
-        {arrivalNotice && <p className="success-message" role="status">{arrivalNotice}</p>}
+        {arrivalNotice && (
+          <p className="success-message" role="status">
+            {arrivalNotice}
+          </p>
+        )}
         <section className="guard-metrics" aria-label="Today's gate activity">
           {[
             ['Today’s entries', metrics.entriesToday],
@@ -637,17 +743,36 @@ export default function VisitorsPage({ society, csrfToken, role }) {
                   <>
                     <label className="field">
                       <span>Vehicle type</span>
-                      <select value={guardForm.vehicleType} onChange={(event) => setGuardForm({ ...guardForm, vehicleType: event.target.value })}>
+                      <select
+                        value={guardForm.vehicleType}
+                        onChange={(event) =>
+                          setGuardForm({ ...guardForm, vehicleType: event.target.value })
+                        }
+                      >
                         <option value="">Select vehicle type</option>
-                        {['Two-wheeler', 'Car', 'Van', 'Truck', 'Other'].map((vehicle) => <option key={vehicle}>{vehicle}</option>)}
+                        {['Two-wheeler', 'Car', 'Van', 'Truck', 'Other'].map((vehicle) => (
+                          <option key={vehicle}>{vehicle}</option>
+                        ))}
                       </select>
                     </label>
                     <label className="field">
                       <span>Parking location (optional)</span>
-                      <input maxLength={80} value={guardForm.parkingLocation} onChange={(event) => setGuardForm({ ...guardForm, parkingLocation: event.target.value })} />
+                      <input
+                        maxLength={80}
+                        value={guardForm.parkingLocation}
+                        onChange={(event) =>
+                          setGuardForm({ ...guardForm, parkingLocation: event.target.value })
+                        }
+                      />
                     </label>
                     <label className="guard-check-field">
-                      <input type="checkbox" checked={guardForm.parkingAlert} onChange={(event) => setGuardForm({ ...guardForm, parkingAlert: event.target.checked })} />
+                      <input
+                        type="checkbox"
+                        checked={guardForm.parkingAlert}
+                        onChange={(event) =>
+                          setGuardForm({ ...guardForm, parkingAlert: event.target.checked })
+                        }
+                      />
                       Flag parking for review
                     </label>
                   </>
@@ -655,13 +780,39 @@ export default function VisitorsPage({ society, csrfToken, role }) {
                 {['EVENT_GUEST', 'MOVING_SERVICE'].includes(guardKind) && (
                   <label className="field">
                     <span>Group size</span>
-                    <input type="number" min="1" max="50" value={guardForm.groupSize} onChange={(event) => setGuardForm({ ...guardForm, groupSize: Number(event.target.value) })} />
+                    <input
+                      type="number"
+                      min="1"
+                      max="50"
+                      value={guardForm.groupSize}
+                      onChange={(event) =>
+                        setGuardForm({ ...guardForm, groupSize: Number(event.target.value) })
+                      }
+                    />
                   </label>
                 )}
                 <label className="field">
                   <span>Expected visit duration</span>
-                  <select value={guardForm.expectedDurationMinutes} onChange={(event) => setGuardForm({ ...guardForm, expectedDurationMinutes: Number(event.target.value) })}>
-                    {[[60, '1 hour'], [120, '2 hours'], [240, '4 hours'], [480, '8 hours'], [1440, '24 hours']].map(([minutes, label]) => <option value={minutes} key={minutes}>{label}</option>)}
+                  <select
+                    value={guardForm.expectedDurationMinutes}
+                    onChange={(event) =>
+                      setGuardForm({
+                        ...guardForm,
+                        expectedDurationMinutes: Number(event.target.value),
+                      })
+                    }
+                  >
+                    {[
+                      [60, '1 hour'],
+                      [120, '2 hours'],
+                      [240, '4 hours'],
+                      [480, '8 hours'],
+                      [1440, '24 hours'],
+                    ].map(([minutes, label]) => (
+                      <option value={minutes} key={minutes}>
+                        {label}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 {guardKind === 'DELIVERY' && (
@@ -800,13 +951,51 @@ export default function VisitorsPage({ society, csrfToken, role }) {
               <div className="guard-visitor-list offline-arrival-list">
                 {offlineQueue.map((item) => (
                   <article className="guard-visitor-card" key={item.id}>
-                    <div className="guard-visitor-main"><div><strong>{item.visitorName}</strong><span>{item.visitorPhone} · {visitorKinds.find((kind) => kind.value === item.visitorType)?.label ?? 'Visitor'}</span></div><span className={`guard-status ${item.state === 'CONFLICT' ? 'closed' : 'pending'}`}>{item.state === 'CONFLICT' ? 'Sync conflict' : 'Not synced'}</span></div>
-                    <div className="guard-visitor-meta"><b>{flats.find((flat) => flat.id === item.flatId) ? `${flats.find((flat) => flat.id === item.flatId).building.name} · ${flats.find((flat) => flat.id === item.flatId).flatNumber}` : 'Destination saved'}</b><span>{item.purpose}</span></div>
-                    <p className="guard-waiting">Not authorized for entry. Resident approval is required after sync.</p>
-                    {item.error && <p className="form-message" role="alert">{item.error}</p>}
+                    <div className="guard-visitor-main">
+                      <div>
+                        <strong>{item.visitorName}</strong>
+                        <span>
+                          {item.visitorPhone} ·{' '}
+                          {visitorKinds.find((kind) => kind.value === item.visitorType)?.label ??
+                            'Visitor'}
+                        </span>
+                      </div>
+                      <span
+                        className={`guard-status ${item.state === 'CONFLICT' ? 'closed' : 'pending'}`}
+                      >
+                        {item.state === 'CONFLICT' ? 'Sync conflict' : 'Not synced'}
+                      </span>
+                    </div>
+                    <div className="guard-visitor-meta">
+                      <b>
+                        {flats.find((flat) => flat.id === item.flatId)
+                          ? `${flats.find((flat) => flat.id === item.flatId).building.name} · ${flats.find((flat) => flat.id === item.flatId).flatNumber}`
+                          : 'Destination saved'}
+                      </b>
+                      <span>{item.purpose}</span>
+                    </div>
+                    <p className="guard-waiting">
+                      Not authorized for entry. Resident approval is required after sync.
+                    </p>
+                    {item.error && (
+                      <p className="form-message" role="alert">
+                        {item.error}
+                      </p>
+                    )}
                     <div className="guard-card-actions">
-                      {item.state === 'QUEUED' && isOnline && <button className="button primary compact" onClick={syncOfflineQueue}>Retry sync</button>}
-                      {item.state === 'CONFLICT' && <button className="button secondary compact" onClick={() => removeQueuedArrival(item.id).then(refreshOfflineQueue)}>Remove draft</button>}
+                      {item.state === 'QUEUED' && isOnline && (
+                        <button className="button primary compact" onClick={syncOfflineQueue}>
+                          Retry sync
+                        </button>
+                      )}
+                      {item.state === 'CONFLICT' && (
+                        <button
+                          className="button secondary compact"
+                          onClick={() => removeQueuedArrival(item.id).then(refreshOfflineQueue)}
+                        >
+                          Remove draft
+                        </button>
+                      )}
                     </div>
                   </article>
                 ))}
@@ -869,7 +1058,11 @@ export default function VisitorsPage({ society, csrfToken, role }) {
                 <p>Visitors currently recorded inside the society.</p>
               </div>
             </div>
-            {emergencyQuery.isError && <p className="form-message" role="alert">{emergencyQuery.error.message}</p>}
+            {emergencyQuery.isError && (
+              <p className="form-message" role="alert">
+                {emergencyQuery.error.message}
+              </p>
+            )}
             {active.length ? (
               <div className="guard-visitor-list">
                 {active.map((pass) =>
@@ -885,60 +1078,362 @@ export default function VisitorsPage({ society, csrfToken, role }) {
                 )}
               </div>
             ) : (
-              <p className="guard-empty">{emergencyQuery.isPending ? 'Loading live visitor list…' : 'No visitors are currently inside.'}</p>
+              <p className="guard-empty">
+                {emergencyQuery.isPending
+                  ? 'Loading live visitor list…'
+                  : 'No visitors are currently inside.'}
+              </p>
             )}
           </section>
         )}
         {guardTab === 'deliveries' && (
           <section className="guard-panel">
-            <div className="guard-panel-heading"><div><h3>Delivery log</h3><p>Food, grocery, courier and e-commerce arrivals.</p></div></div>
-            {deliveries.length ? <div className="guard-visitor-list">{deliveries.map((pass) => visitorCard(pass, pass.status === 'CHECKED_IN' && pass.deliveryHandoverStatus === 'NOT_RECORDED' ? (item) => <><button className="button primary compact" disabled={deliveryMutation.isPending} onClick={() => deliveryMutation.mutate({ pass: item, outcome: 'HANDED_AT_GATE' })}>Handed at gate</button><button className="button secondary compact" disabled={deliveryMutation.isPending} onClick={() => deliveryMutation.mutate({ pass: item, outcome: 'TAKEN_DOORSTEP' })}>Doorstep access</button><button className="button secondary compact" disabled={deliveryMutation.isPending} onClick={() => deliveryMutation.mutate({ pass: item, outcome: 'REFUSED' })}>Refused</button></> : undefined))}</div> : <p className="guard-empty">No delivery records yet.</p>}
+            <div className="guard-panel-heading">
+              <div>
+                <h3>Delivery log</h3>
+                <p>Food, grocery, courier and e-commerce arrivals.</p>
+              </div>
+            </div>
+            {deliveries.length ? (
+              <div className="guard-visitor-list">
+                {deliveries.map((pass) =>
+                  visitorCard(
+                    pass,
+                    pass.status === 'CHECKED_IN' && pass.deliveryHandoverStatus === 'NOT_RECORDED'
+                      ? (item) => (
+                          <>
+                            <button
+                              className="button primary compact"
+                              disabled={deliveryMutation.isPending}
+                              onClick={() =>
+                                deliveryMutation.mutate({ pass: item, outcome: 'HANDED_AT_GATE' })
+                              }
+                            >
+                              Handed at gate
+                            </button>
+                            <button
+                              className="button secondary compact"
+                              disabled={deliveryMutation.isPending}
+                              onClick={() =>
+                                deliveryMutation.mutate({ pass: item, outcome: 'TAKEN_DOORSTEP' })
+                              }
+                            >
+                              Doorstep access
+                            </button>
+                            <button
+                              className="button secondary compact"
+                              disabled={deliveryMutation.isPending}
+                              onClick={() =>
+                                deliveryMutation.mutate({ pass: item, outcome: 'REFUSED' })
+                              }
+                            >
+                              Refused
+                            </button>
+                          </>
+                        )
+                      : undefined,
+                  ),
+                )}
+              </div>
+            ) : (
+              <p className="guard-empty">No delivery records yet.</p>
+            )}
           </section>
         )}
         {guardTab === 'vehicles' && (
           <section className="guard-panel">
-            <div className="guard-panel-heading"><div><h3>Vehicle log</h3><p>Vehicles connected to visitor entries and exits.</p></div></div>
-            {vehicles.length ? <div className="guard-visitor-list">{vehicles.map((pass) => visitorCard(pass))}</div> : <p className="guard-empty">No visitor vehicles recorded yet.</p>}
+            <div className="guard-panel-heading">
+              <div>
+                <h3>Vehicle log</h3>
+                <p>Vehicles connected to visitor entries and exits.</p>
+              </div>
+            </div>
+            {vehicles.length ? (
+              <div className="guard-visitor-list">{vehicles.map((pass) => visitorCard(pass))}</div>
+            ) : (
+              <p className="guard-empty">No visitor vehicles recorded yet.</p>
+            )}
           </section>
         )}
         {guardTab === 'scanner' && (
           <section className="guard-panel">
-            <div className="guard-panel-heading"><div><h3>QR pass scanner</h3><p>Scan or enter a resident-issued pass. Expired and reused codes are rejected.</p></div></div>
-            <form className="visitor-verify guard-verify" onSubmit={(event) => { event.preventDefault(); setError(''); checkInMutation.mutate(); }}>
-              <input aria-label="Visitor pass code" autoComplete="off" placeholder="Enter pass code" value={verifyCode} onChange={(event) => setVerifyCode(event.target.value)} />
-              <button className="button primary" disabled={checkInMutation.isPending || !verifyCode.trim()}>{checkInMutation.isPending ? 'Checking…' : 'Verify & record entry'}</button>
-              <QRScanner label="visitor pass" onError={setError} onCode={(code) => { setVerifyCode(code); checkInMutation.mutate({ code }); }} />
+            <div className="guard-panel-heading">
+              <div>
+                <h3>QR pass scanner</h3>
+                <p>Scan or enter a resident-issued pass. Expired and reused codes are rejected.</p>
+              </div>
+            </div>
+            <form
+              className="visitor-verify guard-verify"
+              onSubmit={(event) => {
+                event.preventDefault();
+                setError('');
+                checkInMutation.mutate();
+              }}
+            >
+              <input
+                aria-label="Visitor pass code"
+                autoComplete="off"
+                placeholder="Enter pass code"
+                value={verifyCode}
+                onChange={(event) => setVerifyCode(event.target.value)}
+              />
+              <button
+                className="button primary"
+                disabled={checkInMutation.isPending || !verifyCode.trim()}
+              >
+                {checkInMutation.isPending ? 'Checking…' : 'Verify & record entry'}
+              </button>
+              <QRScanner
+                label="visitor pass"
+                onError={setError}
+                onCode={(code) => {
+                  setVerifyCode(code);
+                  checkInMutation.mutate({ code });
+                }}
+              />
             </form>
           </section>
         )}
         {guardTab === 'emergency' && (
           <section className="guard-panel emergency-panel">
-            <div className="guard-panel-heading"><div><p className="eyebrow">EVACUATION HEADCOUNT</p><h3>Visitors currently inside</h3><p>Live society-wide list for emergency roll call.</p></div><strong className="emergency-count">{emergencyQuery.data?.count ?? '—'}</strong></div>
-            {emergencyQuery.isError && <p className="form-message" role="alert">{emergencyQuery.error.message}</p>}
-            {emergencyQuery.data?.visitors.length ? <div className="guard-visitor-list">{emergencyQuery.data.visitors.map((visitor) => <article className="guard-visitor-card" key={visitor.id}><div className="guard-visitor-main"><div><strong>{visitor.visitorName}</strong><span>{visitor.visitorPhone || 'No mobile'} · entered {new Date(visitor.checkedInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div><span className="guard-status inside">Inside</span></div><div className="guard-visitor-meta"><b>{visitor.flat.building.name} · {visitor.flat.flatNumber}</b><span>{visitor.purpose}</span><span>Entry recorded by {visitor.checkedInBy.email}</span>{visitor.vehicleNumber && <span>Vehicle {visitor.vehicleNumber}</span>}</div></article>)}</div> : <p className="guard-empty">{emergencyQuery.isPending ? 'Loading live visitor list…' : 'No visitors are currently inside.'}</p>}
+            <div className="guard-panel-heading">
+              <div>
+                <p className="eyebrow">EVACUATION HEADCOUNT</p>
+                <h3>Visitors currently inside</h3>
+                <p>Live society-wide list for emergency roll call.</p>
+              </div>
+              <strong className="emergency-count">{emergencyQuery.data?.count ?? '—'}</strong>
+            </div>
+            {emergencyQuery.isError && (
+              <p className="form-message" role="alert">
+                {emergencyQuery.error.message}
+              </p>
+            )}
+            {emergencyQuery.data?.visitors.length ? (
+              <div className="guard-visitor-list">
+                {emergencyQuery.data.visitors.map((visitor) => (
+                  <article className="guard-visitor-card" key={visitor.id}>
+                    <div className="guard-visitor-main">
+                      <div>
+                        <strong>{visitor.visitorName}</strong>
+                        <span>
+                          {visitor.visitorPhone || 'No mobile'} · entered{' '}
+                          {new Date(visitor.checkedInAt).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                      </div>
+                      <span className="guard-status inside">Inside</span>
+                    </div>
+                    <div className="guard-visitor-meta">
+                      <b>
+                        {visitor.flat.building.name} · {visitor.flat.flatNumber}
+                      </b>
+                      <span>{visitor.purpose}</span>
+                      <span>Entry recorded by {visitor.checkedInBy.email}</span>
+                      {visitor.vehicleNumber && <span>Vehicle {visitor.vehicleNumber}</span>}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="guard-empty">
+                {emergencyQuery.isPending
+                  ? 'Loading live visitor list…'
+                  : 'No visitors are currently inside.'}
+              </p>
+            )}
           </section>
         )}
         {guardTab === 'incidents' && (
           <section className="guard-panel">
-            <div className="guard-panel-heading"><div><h3>Incident reports</h3><p>Report security concerns and emergency events for this society.</p></div></div>
-            <form className="guard-entry-form" onSubmit={(event) => { event.preventDefault(); incidentMutation.mutate(); }}>
-              <label className="field"><span>Category</span><select value={incidentForm.category} onChange={(event) => setIncidentForm({ ...incidentForm, category: event.target.value })}>{[['SUSPICIOUS_ACTIVITY', 'Suspicious activity'], ['UNAUTHORIZED_ENTRY', 'Unauthorized entry'], ['LOST_ITEM', 'Lost item'], ['EMERGENCY', 'Emergency'], ['OTHER', 'Other']].map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
-              <label className="field"><span>Severity</span><select value={incidentForm.severity} onChange={(event) => setIncidentForm({ ...incidentForm, severity: event.target.value })}>{['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map((value) => <option key={value}>{value}</option>)}</select></label>
-              <label className="field"><span>Location (optional)</span><input maxLength={160} value={incidentForm.location} onChange={(event) => setIncidentForm({ ...incidentForm, location: event.target.value })} /></label>
-              <label className="field"><span>Incident details</span><textarea required minLength={5} maxLength={2000} value={incidentForm.description} onChange={(event) => setIncidentForm({ ...incidentForm, description: event.target.value })} /></label>
-              <button className="button primary guard-submit" disabled={incidentMutation.isPending}>{incidentMutation.isPending ? 'Saving…' : 'Save incident report'}</button>
+            <div className="guard-panel-heading">
+              <div>
+                <h3>Incident reports</h3>
+                <p>Report security concerns and emergency events for this society.</p>
+              </div>
+            </div>
+            <form
+              className="guard-entry-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                incidentMutation.mutate();
+              }}
+            >
+              <label className="field">
+                <span>Category</span>
+                <select
+                  value={incidentForm.category}
+                  onChange={(event) =>
+                    setIncidentForm({ ...incidentForm, category: event.target.value })
+                  }
+                >
+                  {[
+                    ['SUSPICIOUS_ACTIVITY', 'Suspicious activity'],
+                    ['UNAUTHORIZED_ENTRY', 'Unauthorized entry'],
+                    ['LOST_ITEM', 'Lost item'],
+                    ['EMERGENCY', 'Emergency'],
+                    ['OTHER', 'Other'],
+                  ].map(([value, label]) => (
+                    <option value={value} key={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Severity</span>
+                <select
+                  value={incidentForm.severity}
+                  onChange={(event) =>
+                    setIncidentForm({ ...incidentForm, severity: event.target.value })
+                  }
+                >
+                  {['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map((value) => (
+                    <option key={value}>{value}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Location (optional)</span>
+                <input
+                  maxLength={160}
+                  value={incidentForm.location}
+                  onChange={(event) =>
+                    setIncidentForm({ ...incidentForm, location: event.target.value })
+                  }
+                />
+              </label>
+              <label className="field">
+                <span>Incident details</span>
+                <textarea
+                  required
+                  minLength={5}
+                  maxLength={2000}
+                  value={incidentForm.description}
+                  onChange={(event) =>
+                    setIncidentForm({ ...incidentForm, description: event.target.value })
+                  }
+                />
+              </label>
+              <button className="button primary guard-submit" disabled={incidentMutation.isPending}>
+                {incidentMutation.isPending ? 'Saving…' : 'Save incident report'}
+              </button>
             </form>
-            {incidentsQuery.isError && <p className="form-message" role="alert">{incidentsQuery.error.message}</p>}
-            <div className="guard-incident-list">{(incidentsQuery.data?.incidents ?? []).map((incident) => <article className="guard-visitor-card" key={incident.id}><div className="guard-visitor-main"><strong>{incident.category.replaceAll('_', ' ')} · {incident.severity}</strong><span className={`guard-status ${incident.status === 'OPEN' ? 'pending' : 'complete'}`}>{incident.status}</span></div><p>{incident.description}</p><div className="guard-visitor-meta"><span>{incident.location || 'Location not specified'}</span><span>{new Date(incident.createdAt).toLocaleString()}</span><span>Reported by {incident.reporter.email}</span></div>{incident.status === 'OPEN' && <button className="button secondary compact" disabled={resolveIncidentMutation.isPending} onClick={() => resolveIncidentMutation.mutate(incident)}>Mark resolved</button>}</article>)}</div>
+            {incidentsQuery.isError && (
+              <p className="form-message" role="alert">
+                {incidentsQuery.error.message}
+              </p>
+            )}
+            <div className="guard-incident-list">
+              {(incidentsQuery.data?.incidents ?? []).map((incident) => (
+                <article className="guard-visitor-card" key={incident.id}>
+                  <div className="guard-visitor-main">
+                    <strong>
+                      {incident.category.replaceAll('_', ' ')} · {incident.severity}
+                    </strong>
+                    <span
+                      className={`guard-status ${incident.status === 'OPEN' ? 'pending' : 'complete'}`}
+                    >
+                      {incident.status}
+                    </span>
+                  </div>
+                  <p>{incident.description}</p>
+                  <div className="guard-visitor-meta">
+                    <span>{incident.location || 'Location not specified'}</span>
+                    <span>{new Date(incident.createdAt).toLocaleString()}</span>
+                    <span>Reported by {incident.reporter.email}</span>
+                  </div>
+                  {incident.status === 'OPEN' && (
+                    <button
+                      className="button secondary compact"
+                      disabled={resolveIncidentMutation.isPending}
+                      onClick={() => resolveIncidentMutation.mutate(incident)}
+                    >
+                      Mark resolved
+                    </button>
+                  )}
+                </article>
+              ))}
+            </div>
           </section>
         )}
         {guardTab === 'handover' && (
           <section className="guard-panel">
-            <div className="guard-panel-heading"><div><h3>Shift handover</h3><p>Save a handover with a live count of pending visitors, active entries and incidents.</p></div></div>
-            <div className="guard-metrics handover-metrics"><div className="guard-metric"><span>Visitors inside</span><strong>{metrics.inside}</strong></div><div className="guard-metric"><span>Pending approvals</span><strong>{metrics.pendingApprovals}</strong></div><div className="guard-metric"><span>Open incidents</span><strong>{(incidentsQuery.data?.incidents ?? []).filter((incident) => incident.status === 'OPEN').length}</strong></div></div>
-            <form className="guard-handover-form" onSubmit={(event) => { event.preventDefault(); handoverMutation.mutate(); }}><label className="field"><span>Handover notes</span><textarea required minLength={3} maxLength={2000} placeholder="Unresolved items, expected arrivals, instructions for the next shift" value={handoverNotes} onChange={(event) => setHandoverNotes(event.target.value)} /></label><button className="button primary" disabled={handoverMutation.isPending}>{handoverMutation.isPending ? 'Saving…' : 'Record shift handover'}</button></form>
-            {handoversQuery.isError && <p className="form-message" role="alert">{handoversQuery.error.message}</p>}
-            <div className="guard-incident-list">{(handoversQuery.data?.handovers ?? []).map((handover) => <article className="guard-visitor-card" key={handover.id}><div className="guard-visitor-main"><strong>Handover · {new Date(handover.createdAt).toLocaleString()}</strong><span>{handover.guard.email}</span></div><div className="guard-visitor-meta"><span>{handover.activeVisitorsCount} inside</span><span>{handover.pendingApprovalsCount} pending</span><span>{handover.openIncidentsCount} open incidents</span></div><p>{handover.notes}</p></article>)}</div>
+            <div className="guard-panel-heading">
+              <div>
+                <h3>Shift handover</h3>
+                <p>
+                  Save a handover with a live count of pending visitors, active entries and
+                  incidents.
+                </p>
+              </div>
+            </div>
+            <div className="guard-metrics handover-metrics">
+              <div className="guard-metric">
+                <span>Visitors inside</span>
+                <strong>{metrics.inside}</strong>
+              </div>
+              <div className="guard-metric">
+                <span>Pending approvals</span>
+                <strong>{metrics.pendingApprovals}</strong>
+              </div>
+              <div className="guard-metric">
+                <span>Open incidents</span>
+                <strong>
+                  {
+                    (incidentsQuery.data?.incidents ?? []).filter(
+                      (incident) => incident.status === 'OPEN',
+                    ).length
+                  }
+                </strong>
+              </div>
+            </div>
+            <form
+              className="guard-handover-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                handoverMutation.mutate();
+              }}
+            >
+              <label className="field">
+                <span>Handover notes</span>
+                <textarea
+                  required
+                  minLength={3}
+                  maxLength={2000}
+                  placeholder="Unresolved items, expected arrivals, instructions for the next shift"
+                  value={handoverNotes}
+                  onChange={(event) => setHandoverNotes(event.target.value)}
+                />
+              </label>
+              <button className="button primary" disabled={handoverMutation.isPending}>
+                {handoverMutation.isPending ? 'Saving…' : 'Record shift handover'}
+              </button>
+            </form>
+            {handoversQuery.isError && (
+              <p className="form-message" role="alert">
+                {handoversQuery.error.message}
+              </p>
+            )}
+            <div className="guard-incident-list">
+              {(handoversQuery.data?.handovers ?? []).map((handover) => (
+                <article className="guard-visitor-card" key={handover.id}>
+                  <div className="guard-visitor-main">
+                    <strong>Handover · {new Date(handover.createdAt).toLocaleString()}</strong>
+                    <span>{handover.guard.email}</span>
+                  </div>
+                  <div className="guard-visitor-meta">
+                    <span>{handover.activeVisitorsCount} inside</span>
+                    <span>{handover.pendingApprovalsCount} pending</span>
+                    <span>{handover.openIncidentsCount} open incidents</span>
+                  </div>
+                  <p>{handover.notes}</p>
+                </article>
+              ))}
+            </div>
           </section>
         )}
         {guardTab === 'history' && (
@@ -970,7 +1465,11 @@ export default function VisitorsPage({ society, csrfToken, role }) {
               )
             )}
             {historyQuery.hasNextPage && (
-              <button className="button secondary guard-load-more" disabled={historyQuery.isFetchingNextPage} onClick={() => historyQuery.fetchNextPage()}>
+              <button
+                className="button secondary guard-load-more"
+                disabled={historyQuery.isFetchingNextPage}
+                onClick={() => historyQuery.fetchNextPage()}
+              >
                 {historyQuery.isFetchingNextPage ? 'Loading…' : 'Load more history'}
               </button>
             )}
@@ -1081,6 +1580,207 @@ export default function VisitorsPage({ society, csrfToken, role }) {
               ))}
             </div>
           )}
+        </section>
+      )}
+      {passData.role === 'RESIDENT' && (
+        <section className="guard-panel resident-approval-panel">
+          <div className="guard-panel-heading">
+            <div>
+              <h3>Regular worker access</h3>
+              <p>
+                Authorize recurring domestic workers or service personnel for your registered flats.
+              </p>
+            </div>
+          </div>
+          {recurringAuthorizationsQuery.isError && (
+            <p className="form-message" role="alert">
+              {recurringAuthorizationsQuery.error.message}
+            </p>
+          )}
+          <form
+            className="guard-entry-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              recurringAuthorizationMutation.mutate();
+            }}
+          >
+            <label className="field">
+              <span>Destination flat</span>
+              <select
+                required
+                value={recurringForm.flatId}
+                onChange={(event) =>
+                  setRecurringForm({ ...recurringForm, flatId: event.target.value })
+                }
+              >
+                <option value="">Select your flat</option>
+                {(flatsQuery.data?.flats ?? []).map((flat) => (
+                  <option key={flat.id} value={flat.id}>
+                    {flat.building.name} · {flat.flatNumber}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Visitor type</span>
+              <select
+                value={recurringForm.visitorType}
+                onChange={(event) =>
+                  setRecurringForm({ ...recurringForm, visitorType: event.target.value })
+                }
+              >
+                <option value="DOMESTIC_WORKER">Domestic worker</option>
+                <option value="SERVICE_PERSONNEL">Service personnel</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Visitor name</span>
+              <input
+                required
+                maxLength={100}
+                autoComplete="name"
+                value={recurringForm.visitorName}
+                onChange={(event) =>
+                  setRecurringForm({ ...recurringForm, visitorName: event.target.value })
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Mobile number</span>
+              <input
+                required
+                inputMode="tel"
+                autoComplete="tel"
+                value={recurringForm.visitorPhone}
+                onChange={(event) =>
+                  setRecurringForm({ ...recurringForm, visitorPhone: event.target.value })
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Purpose</span>
+              <input
+                required
+                maxLength={200}
+                value={recurringForm.purpose}
+                onChange={(event) =>
+                  setRecurringForm({ ...recurringForm, purpose: event.target.value })
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Valid from</span>
+              <input
+                type="date"
+                required
+                value={recurringForm.validFrom}
+                onChange={(event) =>
+                  setRecurringForm({ ...recurringForm, validFrom: event.target.value })
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Valid until</span>
+              <input
+                type="date"
+                required
+                min={recurringForm.validFrom}
+                value={recurringForm.validUntil}
+                onChange={(event) =>
+                  setRecurringForm({ ...recurringForm, validUntil: event.target.value })
+                }
+              />
+            </label>
+            <div className="field">
+              <span>Authorized days</span>
+              <div className="guard-kind-picker">
+                {weekdays.map(([day, value]) => (
+                  <button
+                    className={recurringForm.weekdays.includes(value) ? 'selected' : ''}
+                    type="button"
+                    aria-pressed={recurringForm.weekdays.includes(value)}
+                    key={value}
+                    onClick={() =>
+                      setRecurringForm({
+                        ...recurringForm,
+                        weekdays: recurringForm.weekdays.includes(value)
+                          ? recurringForm.weekdays.filter((item) => item !== value)
+                          : [...recurringForm.weekdays, value].sort((a, b) => a - b),
+                      })
+                    }
+                  >
+                    {day.slice(0, 3)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="field">
+              <span>Daily start</span>
+              <input
+                type="time"
+                required
+                value={recurringForm.startTime}
+                onChange={(event) =>
+                  setRecurringForm({ ...recurringForm, startTime: event.target.value })
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Daily end</span>
+              <input
+                type="time"
+                required
+                value={recurringForm.endTime}
+                onChange={(event) =>
+                  setRecurringForm({ ...recurringForm, endTime: event.target.value })
+                }
+              />
+            </label>
+            <button
+              className="button primary guard-submit"
+              disabled={
+                recurringAuthorizationMutation.isPending ||
+                !recurringForm.weekdays.length ||
+                !flatsQuery.data?.flats?.length
+              }
+            >
+              {recurringAuthorizationMutation.isPending
+                ? 'Saving authorization…'
+                : 'Authorize regular visitor'}
+            </button>
+          </form>
+          <div className="resident-approval-history">
+            <h4>Current and past authorizations</h4>
+            {recurringAuthorizationsQuery.data?.authorizations?.length
+              ? recurringAuthorizationsQuery.data.authorizations.map((authorization) => (
+                  <div key={authorization.id}>
+                    <span>
+                      <b>{authorization.visitorName}</b> · {authorization.flat.building.name}{' '}
+                      {authorization.flat.flatNumber} · {authorization.visitorPhone}
+                      <small>
+                        {authorization.purpose} ·{' '}
+                        {new Date(authorization.validFrom).toLocaleDateString()}–
+                        {new Date(authorization.validUntil).toLocaleDateString()}
+                      </small>
+                    </span>
+                    <span className={`guard-status ${authorization.active ? 'inside' : 'closed'}`}>
+                      {authorization.active ? 'Active' : 'Revoked'}
+                    </span>
+                    {authorization.active && (
+                      <button
+                        className="button secondary compact"
+                        disabled={revokeRecurringAuthorizationMutation.isPending}
+                        onClick={() => revokeRecurringAuthorizationMutation.mutate(authorization)}
+                      >
+                        Revoke
+                      </button>
+                    )}
+                  </div>
+                ))
+              : !recurringAuthorizationsQuery.isPending && (
+                  <p className="guard-empty">No regular visitor authorizations recorded.</p>
+                )}
+          </div>
         </section>
       )}
       {canManage && (

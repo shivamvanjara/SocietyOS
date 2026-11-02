@@ -91,11 +91,12 @@ describe('visitor pass API', () => {
       flat: { flatNumber: '10A', building: { name: 'North' } },
     };
     const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
       societyMembership: {
         findFirst: vi.fn().mockResolvedValue({ id: 'guard-id', role: 'SECURITY_GUARD' }),
       },
       visitorPass: {
-        findFirst: vi.fn().mockResolvedValue(pass),
+        findFirst: vi.fn().mockResolvedValueOnce(pass).mockResolvedValueOnce(null),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       auditLog: { create: vi.fn().mockResolvedValue({}) },
@@ -121,6 +122,7 @@ describe('visitor pass API', () => {
 
   it('registers gate arrivals as pending approval with society scoped flat data', async () => {
     const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
       societyMembership: {
         findFirst: vi.fn().mockResolvedValue({ id: 'guard-id', role: 'SECURITY_GUARD' }),
       },
@@ -134,6 +136,7 @@ describe('visitor pass API', () => {
       society: { findUnique: vi.fn().mockResolvedValue({ name: 'Cedar Court' }) },
       resident: { findMany: vi.fn().mockResolvedValue([{ email: 'resident@example.test' }]) },
       visitorPass: {
+        findFirst: vi.fn().mockResolvedValue(null),
         create: vi.fn().mockResolvedValue({ id: passId, status: 'PENDING_APPROVAL' }),
       },
       auditLog: { create: vi.fn().mockResolvedValue({}) },
@@ -173,6 +176,7 @@ describe('visitor pass API', () => {
 
   it('approves an arrival only as its destination resident', async () => {
     const transaction = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
       societyMembership: {
         findFirst: vi.fn().mockResolvedValue({ id: 'resident-membership', role: 'RESIDENT' }),
       },

@@ -1,3 +1,4 @@
+import { createCipheriv, randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   createCsrfToken,
@@ -61,6 +62,21 @@ describe('authentication security helpers', () => {
     expect(secret).toMatch(/^[A-Z2-7]{32}$/u);
     expect(encrypted).not.toContain(secret);
     expect(decryptTotpSecret(encrypted)).toBe(secret);
-    expect(() => decryptTotpSecret(`${encrypted.slice(0, -2)}xx`)).toThrow();
+    expect(Buffer.from(encrypted, 'base64url').subarray(12, 28)).toHaveLength(16);
+
+    const stored = Buffer.from(encrypted, 'base64url');
+    stored[12] ^= 1;
+    expect(() => decryptTotpSecret(stored.toString('base64url'))).toThrow();
+    expect(() => decryptTotpSecret(Buffer.alloc(28).toString('base64url'))).toThrow();
+    expect(() => decryptTotpSecret(`${encrypted}!`)).toThrow();
+  });
+
+  it('rejects MFA ciphertext carrying an invalid authentication tag length', () => {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', Buffer.alloc(32), iv, { authTagLength: 12 });
+    const ciphertext = Buffer.concat([cipher.update('secret'), cipher.final()]);
+    const stored = Buffer.concat([iv, cipher.getAuthTag(), ciphertext]);
+    expect(stored.subarray(12, 24)).toHaveLength(12);
+    expect(() => decryptTotpSecret(stored.toString('base64url'))).toThrow();
   });
 });

@@ -28,15 +28,15 @@ SocietyOS brings resident services, society administration, maintenance billing 
 
 ## What SocietyOS includes
 
-| Area | Capabilities |
-| --- | --- |
-| Accounts | Registration, email verification, sign-in, password recovery, multi-society membership, role-based invitations and administrator MFA |
-| Society setup | Society profile, buildings, flats, resident records and member roles |
-| Billing | Maintenance charges, partial payments, receipts, invoice documents, expense review and society transfer instructions |
-| Online payments | Razorpay checkout using the merchant credentials configured by each society |
-| Resident services | Notices and read receipts, complaint discussions and status, facility bookings and visitor pass creation |
-| Gate operations | Guard quick entry, resident approval requests, visitor QR scanning, active visitors, entry and exit records, incidents, shift handover, emergency headcount and encrypted offline arrival drafts |
-| Platform operations | Super-admin society and account access, subscription plans, subscription checkout and audit history |
+| Area                | Capabilities                                                                                                                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Accounts            | Registration, email verification, sign-in, password recovery, multi-society membership, role-based invitations and administrator MFA                                                             |
+| Society setup       | Society profile, buildings, flats, resident records and member roles                                                                                                                             |
+| Billing             | Maintenance charges, partial payments, receipts, invoice documents, expense review and society transfer instructions                                                                             |
+| Online payments     | Razorpay checkout using the merchant credentials configured by each society                                                                                                                      |
+| Resident services   | Notices and read receipts, complaint discussions and status, facility bookings and visitor pass creation                                                                                         |
+| Gate operations     | Guard quick entry, resident approval requests, visitor QR scanning, active visitors, entry and exit records, incidents, shift handover, emergency headcount and encrypted offline arrival drafts |
+| Platform operations | Super-admin society and account access, subscription plans, subscription checkout and audit history                                                                                              |
 
 Resident, society staff and security-guard access is enforced by the API. Gate registrations await resident authorization unless a resident has created a valid pass. Offline guard drafts are not approvals: entry remains blocked until the draft synchronizes and authorization is recorded.
 
@@ -178,16 +178,16 @@ See [deployment guidance](docs/deployment.md) and [security notes](docs/security
 
 ## Useful commands
 
-| Command | Purpose |
-| --- | --- |
-| `npm run dev` | Start the web app and API for local development |
-| `npm run build` | Build all workspaces |
-| `npm run lint` | Lint JavaScript source |
-| `npm test` | Run workspace tests |
-| `npm run db:validate` | Validate the Prisma schema |
-| `npm run db:generate` | Generate the Prisma client |
-| `npm run db:deploy` | Apply pending migrations to the configured database |
-| `npm run db:studio` | Open Prisma Studio |
+| Command               | Purpose                                             |
+| --------------------- | --------------------------------------------------- |
+| `npm run dev`         | Start the web app and API for local development     |
+| `npm run build`       | Build all workspaces                                |
+| `npm run lint`        | Lint JavaScript source                              |
+| `npm test`            | Run workspace tests                                 |
+| `npm run db:validate` | Validate the Prisma schema                          |
+| `npm run db:generate` | Generate the Prisma client                          |
+| `npm run db:deploy`   | Apply pending migrations to the configured database |
+| `npm run db:studio`   | Open Prisma Studio                                  |
 
 Database integration tests require PostgreSQL and `RUN_DATABASE_TESTS=true`; see the CI workflow for the test environment configuration.
 

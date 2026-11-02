@@ -51,13 +51,16 @@ export function createTotpSecret() {
 
 export function encryptTotpSecret(secret) {
   const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', secretKey(), iv);
+  const cipher = createCipheriv('aes-256-gcm', secretKey(), iv, { authTagLength: 16 });
   cipher.setAAD(associatedData);
   const ciphertext = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
   return Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString('base64url');
 }
 
 export function decryptTotpSecret(encrypted) {
+  if (typeof encrypted !== 'string' || !/^[A-Za-z0-9_-]+$/u.test(encrypted)) {
+    throw new Error('Invalid encrypted MFA secret');
+  }
   const stored = Buffer.from(encrypted, 'base64url');
   if (stored.length < 29) throw new Error('Invalid encrypted MFA secret');
   const decipher = createDecipheriv('aes-256-gcm', secretKey(), stored.subarray(0, 12), {
