@@ -50,7 +50,7 @@ flowchart LR
     API --> Pay[Razorpay]
 ```
 
-The frontend and API use a same-origin `/api/*` proxy. `vercel.json` points that proxy at `https://societyos-api.onrender.com`; if the Render service hostname changes, update the rewrite before deploying the frontend. The API uses Neon's pooled `DATABASE_URL`; Prisma migrations use Neon's direct `DIRECT_URL`.
+The frontend and API use a same-origin `/api/*` proxy. `vercel.json` points that proxy at `https://societyos-api-oaq4.onrender.com`; if the Render service hostname changes, update the rewrite before deploying the frontend. The API uses Neon's pooled `DATABASE_URL`; Prisma migrations use Neon's direct `DIRECT_URL`.
 
 ## Run it locally
 
@@ -155,7 +155,7 @@ Push source code to **GitHub**. Deploy the backend from GitHub using **Render**,
 
 ### 4. Connect the frontend to the API
 
-1. Confirm the Render web service hostname is `societyos-api.onrender.com`, as expected by `vercel.json`. If Render assigned a different hostname, update the API rewrite in `vercel.json` and push the change.
+1. Confirm the Render web service hostname is `societyos-api-oaq4.onrender.com`, as expected by `vercel.json`. If Render assigned a different hostname, update the API rewrite in `vercel.json` and redeploy the frontend.
 2. Redeploy the Vercel project after the backend is available.
 3. Check sign-up email, password recovery, role-based access, visitor authorization and QR flows, and Razorpay in test mode before inviting a real society.
 
@@ -164,8 +164,8 @@ Push source code to **GitHub**. Deploy the backend from GitHub using **Render**,
 Use these URLs in Razorpay:
 
 ```text
-https://societyos-api.onrender.com/api/v1/payments/webhooks/razorpay
-https://societyos-api.onrender.com/api/v1/subscriptions/webhooks/razorpay
+https://societyos-api-oaq4.onrender.com/api/v1/payments/webhooks/razorpay
+https://societyos-api-oaq4.onrender.com/api/v1/subscriptions/webhooks/razorpay
 ```
 
 Configure the event types listed in [.env.example](.env.example). After changing the API hostname, update both URLs.

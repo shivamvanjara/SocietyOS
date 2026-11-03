@@ -7,7 +7,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://societyos-api.onrender.com/api/:path*"
+      "destination": "https://societyos-api-oaq4.onrender.com/api/:path*"
     },
     {
       "source": "/(.*)",
