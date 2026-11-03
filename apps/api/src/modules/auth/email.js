@@ -1,4 +1,11 @@
 import { env } from '../../config/env.js';
+import { z } from 'zod';
+
+const recipientEmailSchema = z.email().trim().max(320);
+
+function safeProviderCode(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_.-]{1,80}$/u.test(value) ? value : 'unknown';
+}
 
 function escapeHtml(value) {
   return value.replace(/[&<>"']/g, (character) => {
@@ -8,29 +15,51 @@ function escapeHtml(value) {
 }
 
 async function sendTransactionalEmail({ email, actionUrl, subject, text, actionLabel }) {
+  const recipient = recipientEmailSchema.safeParse(email);
+  if (!recipient.success) {
+    throw new Error('Email recipient is invalid');
+  }
+
   if (!env.EMAIL_API_KEY || !env.EMAIL_FROM) {
     if (env.NODE_ENV !== 'production') return { previewUrl: actionUrl };
     throw new Error('Transactional email is not configured');
   }
 
-  const response = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    signal: AbortSignal.timeout(10_000),
-    headers: {
-      Authorization: `Bearer ${env.EMAIL_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: env.EMAIL_FROM,
-      to: [email],
-      subject,
-      text,
-      html: `<p>${escapeHtml(text.split('\n\n')[0])}</p><p><a href="${escapeHtml(actionUrl)}">${escapeHtml(actionLabel)}</a></p><p>${escapeHtml(text.split('\n\n').slice(1).join(' '))}</p>`,
-    }),
-  });
+  let response;
+  try {
+    response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      signal: AbortSignal.timeout(10_000),
+      headers: {
+        Authorization: `Bearer ${env.EMAIL_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: env.EMAIL_FROM,
+        to: [recipient.data],
+        subject,
+        text,
+        html: `<p>${escapeHtml(text.split('\n\n')[0])}</p><p><a href="${escapeHtml(actionUrl)}">${escapeHtml(actionLabel)}</a></p><p>${escapeHtml(text.split('\n\n').slice(1).join(' '))}</p>`,
+      }),
+    });
+  } catch (error) {
+    console.error('Resend email request failed', { errorType: safeProviderCode(error?.name) });
+    throw error;
+  }
 
-  if (!response.ok) throw new Error(`Email provider rejected the message (${response.status})`);
-  return {};
+  const payload = await response.json().catch(() => null);
+  const providerError = payload && typeof payload === 'object' ? payload.error : null;
+  if (!response.ok || providerError) {
+    const providerCode = safeProviderCode(providerError?.name ?? providerError?.code);
+    console.error('Resend rejected email request', {
+      status: response.status,
+      providerCode,
+    });
+    throw new Error(`Email provider rejected the message (${response.status})`);
+  }
+
+  const data = payload?.data ?? payload;
+  return typeof data?.id === 'string' ? { emailId: data.id } : {};
 }
 
 export function sendPasswordResetEmail(email, resetUrl) {

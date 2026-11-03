@@ -554,7 +554,7 @@ router.post(
     try {
       const user = await prisma.user.findUnique({
         where: { email: parsed.data.email },
-        select: { id: true, status: true },
+        select: { id: true, email: true, status: true },
       });
       let previewUrl;
       if (user?.status === 'ACTIVE') {
